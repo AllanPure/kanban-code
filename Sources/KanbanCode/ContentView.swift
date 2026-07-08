@@ -785,7 +785,7 @@ struct ContentView: View {
                     .ignoresSafeArea(edges: .top)
                     .inspector(isPresented: showInspector) {
                         inspectorContent
-                            .inspectorColumnWidth(min: 600, ideal: 800, max: 1000)
+                            .inspectorColumnWidth(min: 600, ideal: 800, max: 2400)
                     }
             }
         }
