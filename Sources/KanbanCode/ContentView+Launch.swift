@@ -121,6 +121,49 @@ extension ContentView {
         }
     }
 
+    /// Stable name of the general orchestrator session.
+    static let orchestratorTitle = "🎛 Orchestrator"
+
+    /// Open the general orchestrator: a project-wide Claude session (no worktree) that
+    /// decomposes tasks into Backlog cards via the `task-orchestrator` skill + `kanban`
+    /// CLI. Focuses the existing one for the current project, or launches a fresh one.
+    func openOrchestrator() {
+        let projectPath = store.state.selectedProjectPath ?? store.state.configuredProjects.first?.path
+
+        if let existing = store.state.cards.first(where: {
+            $0.link.name == Self.orchestratorTitle
+                && $0.link.projectPath == projectPath
+                && $0.link.sessionLink != nil
+        }) {
+            store.dispatch(.selectCard(cardId: existing.id))
+            shouldFocusTerminal = true
+            return
+        }
+
+        let prompt = """
+        You are the task orchestrator for this project. When I give you a broad task, use the \
+        task-orchestrator skill to break it into a dependency graph of Backlog cards, propose the \
+        plan, and — once I approve — create the cards with the `kanban` CLI. You coordinate and \
+        delegate; you don't implement the tasks yourself.
+        """
+        createManualTaskAndLaunch(
+            prompt: prompt,
+            projectPath: projectPath,
+            title: Self.orchestratorTitle,
+            createWorktree: false,
+            runRemotely: true
+        )
+        // createManualTaskAndLaunch dispatches .createManualTask synchronously, so the
+        // card already exists — select it so its chat panel opens immediately (otherwise
+        // the orchestrator launches but stays invisible, buried among the columns).
+        if let created = store.state.cards.first(where: {
+            $0.link.name == Self.orchestratorTitle && $0.link.projectPath == projectPath
+        }) {
+            store.dispatch(.selectCard(cardId: created.id))
+            shouldFocusTerminal = true
+        }
+    }
+
     func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil) {
         // IMMEDIATE state update via reducer — no more dual memory+disk writes
         store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
