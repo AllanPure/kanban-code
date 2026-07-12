@@ -94,6 +94,10 @@ public final class AppState: @unchecked Sendable {
     /// Prevents the reconciler from re-adding them during in-flight reconciliation.
     public var deletedCardIds: Set<String> = []
 
+    /// While ⌘-clicking to draw a dependency edge: the first (prerequisite) card
+    /// picked. The next ⌘-click on another card completes the edge. nil = not linking.
+    public var linkingSourceCardId: String?
+
     /// Cards with an async operation in progress (terminal creating, worktree cleanup, PR discovery).
     /// Transient — not persisted. Used to show a spinner on the card.
     public var busyCards: Set<String> = []
@@ -362,6 +366,11 @@ public enum Action: Sendable {
     /// No-op if it would create a cycle, is a self-edge, or already exists.
     case addCardDependency(cardId: String, dependsOnId: String)
     case removeCardDependency(cardId: String, dependsOnId: String)
+    /// A ⌘-click on a card while drawing a dependency: first click picks the
+    /// prerequisite, second click on another card creates the edge (target depends
+    /// on prerequisite). Re-clicking the same card, or a non-⌘ selection, cancels.
+    case cmdClickCard(cardId: String)
+    case cancelLinking
     case setCardPinned(cardId: String, isPinned: Bool)
     case archiveCard(cardId: String)
     case deleteCard(cardId: String)
@@ -800,6 +809,31 @@ public enum Reducer {
             if changed { state.rebuildCards() }
             return []
 
+        case .cmdClickCard(let cardId):
+            guard state.links[cardId] != nil else { return [] }
+            guard let source = state.linkingSourceCardId else {
+                state.linkingSourceCardId = cardId   // pick the prerequisite
+                return []
+            }
+            state.linkingSourceCardId = nil
+            guard source != cardId else { return [] } // re-click same card cancels
+            // Second card is the dependent: it depends on the first (prerequisite).
+            // (Inlines addCardDependency — the reducer's switch runs by-value here.)
+            guard var link = state.links[cardId], state.links[source] != nil else { return [] }
+            var deps = link.dependsOn ?? []
+            guard !deps.contains(source),
+                  !TaskDependencies.wouldCreateCycle(links: state.links, from: cardId, to: source)
+            else { return [] }
+            deps.append(source)
+            link.dependsOn = deps
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .cancelLinking:
+            state.linkingSourceCardId = nil
+            return []
+
         case .removeCardDependency(let cardId, let dependsOnId):
             guard var link = state.links[cardId], var deps = link.dependsOn,
                   deps.contains(dependsOnId) else { return [] }
@@ -914,6 +948,7 @@ public enum Reducer {
             return []
 
         case .selectCard(let cardId):
+            state.linkingSourceCardId = nil   // a normal click cancels ⌘-linking
             state.selectedCardId = cardId
             if let cardId, var link = state.links[cardId] {
                 link.lastOpenedAt = Date()

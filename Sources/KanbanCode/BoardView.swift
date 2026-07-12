@@ -189,6 +189,7 @@ struct BoardView: View {
                             onMigrateAssistant: onMigrateAssistant,
                             onRefreshBacklog: column == .backlog ? onRefreshBacklog : nil,
                             onCardClicked: onCardClicked,
+                            onCmdClickCard: { store.dispatch(.cmdClickCard(cardId: $0)) },
                             onColumnBackgroundClick: onColumnBackgroundClick
                         )
                         .id(column)
@@ -247,6 +248,30 @@ struct BoardView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: store.state.error != nil)
+        // Dependency-linking hint (⌘+click flow)
+        .overlay(alignment: .top) {
+            if let sourceId = store.state.linkingSourceCardId {
+                let name = store.state.links[sourceId]?.displayTitle ?? "card"
+                HStack(spacing: 10) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .foregroundStyle(Color.accentColor)
+                    Text("Linking from “\(name)” — ⌘+click the dependent card")
+                        .font(.app(.body, weight: .medium))
+                        .lineLimit(1)
+                    Button("Cancel") { store.dispatch(.cancelLinking) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.4)))
+                .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
+                .padding(.top, 60)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: store.state.linkingSourceCardId)
         // Empty board hint
         .overlay {
             if store.state.filteredCards.isEmpty && !store.state.isLoading {
@@ -357,6 +382,10 @@ struct BoardView: View {
             onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
             onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
             onSelect: {
+                if NSEvent.modifierFlags.contains(.command) {
+                    store.dispatch(.cmdClickCard(cardId: card.id))
+                    return
+                }
                 let newId = store.state.selectedCardId == card.id ? nil : card.id
                 store.dispatch(.selectCard(cardId: newId))
                 if newId != nil { onCardClicked(card.id) }

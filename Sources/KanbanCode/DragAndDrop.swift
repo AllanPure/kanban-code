@@ -52,6 +52,7 @@ struct DroppableColumnView: View {
     var onMigrateAssistant: (String, CodingAssistant) -> Void = { _, _ in }
     var onRefreshBacklog: (() -> Void)?
     var onCardClicked: (String) -> Void = { _ in }
+    var onCmdClickCard: (String) -> Void = { _ in }
     var onColumnBackgroundClick: (KanbanCodeColumn) -> Void = { _ in }
 
     @State private var isTargeted = false
@@ -268,6 +269,10 @@ struct DroppableColumnView: View {
             onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
             onSetPinned: { isPinned in onSetCardPinned(card.id, isPinned) },
             onSelect: {
+                if NSEvent.modifierFlags.contains(.command) {
+                    onCmdClickCard(card.id)   // ⌘-click draws a dependency edge
+                    return
+                }
                 let newId = selectedCardId == card.id ? nil : card.id
                 selectedCardId = newId
                 if newId != nil { onCardClicked(card.id) }

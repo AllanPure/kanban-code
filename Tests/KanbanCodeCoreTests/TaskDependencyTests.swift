@@ -57,6 +57,36 @@ struct TaskDependencyTests {
         #expect(state.links["c"]?.dependsOn == nil)  // rejected, no cycle introduced
     }
 
+    @Test("cmdClickCard: first picks source, second creates the edge")
+    func cmdClickLinking() {
+        var state = stateWith([card("a"), card("b")])
+        // First ⌘-click picks the prerequisite.
+        _ = Reducer.reduce(state: &state, action: .cmdClickCard(cardId: "a"))
+        #expect(state.linkingSourceCardId == "a")
+        #expect(state.links["b"]?.dependsOn == nil)
+        // Second ⌘-click on another card creates "b depends on a" and clears state.
+        _ = Reducer.reduce(state: &state, action: .cmdClickCard(cardId: "b"))
+        #expect(state.linkingSourceCardId == nil)
+        #expect(state.links["b"]?.dependsOn == ["a"])
+    }
+
+    @Test("cmdClickCard on the same card twice cancels")
+    func cmdClickSameCardCancels() {
+        var state = stateWith([card("a")])
+        _ = Reducer.reduce(state: &state, action: .cmdClickCard(cardId: "a"))
+        _ = Reducer.reduce(state: &state, action: .cmdClickCard(cardId: "a"))
+        #expect(state.linkingSourceCardId == nil)
+        #expect(state.links["a"]?.dependsOn == nil)
+    }
+
+    @Test("cmdClick linking respects the cycle guard")
+    func cmdClickNoCycle() {
+        var state = stateWith([card("a", dependsOn: ["b"]), card("b")])
+        _ = Reducer.reduce(state: &state, action: .cmdClickCard(cardId: "a")) // source = a
+        _ = Reducer.reduce(state: &state, action: .cmdClickCard(cardId: "b")) // "b depends on a" → cycle (a→b→a)
+        #expect(state.links["b"]?.dependsOn == nil) // rejected, no edge
+    }
+
     @Test("removeCardDependency drops the edge, clears to nil when empty")
     func removeEdge() {
         var state = stateWith([card("a"), card("b", dependsOn: ["a"])])
