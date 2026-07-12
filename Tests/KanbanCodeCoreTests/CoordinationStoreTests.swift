@@ -44,6 +44,40 @@ struct CoordinationStoreTests {
         #expect(read[0].name == "Test session")
     }
 
+    @Test("mergeAndWriteLinks preserves on-disk cards not in the in-memory snapshot")
+    func mergeAndWritePreservesExternal() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        let store = CoordinationStore(basePath: dir)
+
+        // Simulate a card created out-of-process (e.g. by the CLI) already on disk.
+        let external = Link(id: "card_external", name: "From CLI", column: .backlog)
+        try await store.writeLinks([external])
+
+        // The app persists a full in-memory snapshot that doesn't know about it yet.
+        let inMemory = Link(id: "card_app", name: "From app", column: .inProgress)
+        try await store.mergeAndWriteLinks([inMemory])
+
+        let read = try await store.readLinks()
+        let ids = Set(read.map(\.id))
+        #expect(ids == ["card_external", "card_app"]) // external card is NOT clobbered
+    }
+
+    @Test("mergeAndWriteLinks lets the in-memory version win for shared ids")
+    func mergeAndWriteIncomingWins() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        let store = CoordinationStore(basePath: dir)
+
+        try await store.writeLinks([Link(id: "card_x", name: "old name", column: .backlog)])
+        try await store.mergeAndWriteLinks([Link(id: "card_x", name: "new name", column: .done)])
+
+        let read = try await store.readLinks()
+        #expect(read.count == 1)
+        #expect(read[0].name == "new name")
+        #expect(read[0].column == .done)
+    }
+
     @Test("Synchronous snapshot retains tmux links for quit-time fallback")
     func synchronousSnapshotRetainsTmuxLinks() async throws {
         let dir = try makeTempDir()
