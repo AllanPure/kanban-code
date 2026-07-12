@@ -148,4 +148,22 @@ struct CardLifecycleTests {
         // Column is already inProgress, so updatedAt should not change
         #expect(link.updatedAt == originalUpdatedAt)
     }
+
+    @Test("Freshly-idle In Progress card is debounced, stays In Progress")
+    func idleDebouncedStaysInProgress() {
+        let now = Date.now
+        var link = Link(column: .inProgress, sessionLink: SessionLink(sessionId: "s1"))
+        link.lastActivity = now.addingTimeInterval(-5) // idle 5s, within the grace window
+        UpdateCardColumn.update(link: &link, activityState: .idleWaiting, hasWorktree: true, now: now)
+        #expect(link.column == .inProgress)
+    }
+
+    @Test("In Progress card drops to Waiting once idle past the debounce")
+    func idlePastDebounceMovesToWaiting() {
+        let now = Date.now
+        var link = Link(column: .inProgress, sessionLink: SessionLink(sessionId: "s1"))
+        link.lastActivity = now.addingTimeInterval(-(UpdateCardColumn.waitingDebounce + 5))
+        UpdateCardColumn.update(link: &link, activityState: .idleWaiting, hasWorktree: true, now: now)
+        #expect(link.column == .waiting)
+    }
 }
