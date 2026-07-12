@@ -129,6 +129,9 @@ export interface Link {
   /// ISO timestamp set by `kanban task done` when the agent finishes its work —
   /// releases this card's dependents, independent of the PR-gated Done column.
   completedAt?: string;
+  /// Free-form status chips shown on the card (module, phase like "in test" /
+  /// "waiting for Codex"), set via `kanban task label`. Disk-owned.
+  labels?: string[];
 }
 
 export interface TmuxSession {

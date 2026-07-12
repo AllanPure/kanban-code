@@ -238,6 +238,12 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// forcing a merged PR per step. nil = not yet completed.
     public var completedAt: Date?
 
+    /// Free-form status labels shown as chips on the card — e.g. the Odoo module,
+    /// or a phase like "in test" / "waiting for Codex". Set out-of-process by the
+    /// agent (or user) via `kanban task label`, so an agent can self-report where it
+    /// is as it works. Disk-owned: the app displays them but never overwrites them.
+    public var labels: [String]?
+
     // MARK: - Display
 
     /// Best display title from link data alone: name → promptBody → branch → PR title → session ID.
@@ -348,7 +354,8 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         discoveredBranches: [String]? = nil,
         discoveredRepos: [String: String]? = nil,
         dependsOn: [String]? = nil,
-        completedAt: Date? = nil
+        completedAt: Date? = nil,
+        labels: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -380,6 +387,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.discoveredRepos = discoveredRepos
         self.dependsOn = dependsOn
         self.completedAt = completedAt
+        self.labels = labels
     }
 
     // MARK: - Backward-compatible Codable
@@ -388,7 +396,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, isRemote, isLaunching, sortOrder, pinnedAt, pinnedSortOrder
-        case discoveredBranches, discoveredRepos, assistant, apiServiceId, dependsOn, completedAt
+        case discoveredBranches, discoveredRepos, assistant, apiServiceId, dependsOn, completedAt, labels
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
         // Old format keys (for reading legacy format)
@@ -422,6 +430,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         discoveredRepos = try c.decodeIfPresent([String: String].self, forKey: .discoveredRepos)
         dependsOn = try c.decodeIfPresent([String].self, forKey: .dependsOn)
         completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
+        labels = try c.decodeIfPresent([String].self, forKey: .labels)
         assistant = try c.decodeIfPresent(CodingAssistant.self, forKey: .assistant)
         apiServiceId = try c.decodeIfPresent(String.self, forKey: .apiServiceId)
 
@@ -513,6 +522,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(discoveredRepos, forKey: .discoveredRepos)
         try c.encodeIfPresent(dependsOn, forKey: .dependsOn)
         try c.encodeIfPresent(completedAt, forKey: .completedAt)
+        try c.encodeIfPresent(labels, forKey: .labels)
         try c.encodeIfPresent(assistant, forKey: .assistant)
         try c.encodeIfPresent(apiServiceId, forKey: .apiServiceId)
 

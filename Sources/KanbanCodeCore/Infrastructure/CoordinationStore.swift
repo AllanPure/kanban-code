@@ -187,19 +187,33 @@ public actor CoordinationStore {
     public func mergeAndWriteLinks(_ links: [Link]) throws {
         let incomingIds = Set(links.map(\.id))
         let onDisk = (try? readLinks()) ?? []
+        let safe = links.map { preservingExternalFields($0, from: onDisk) }
         let preserved = onDisk.filter { !incomingIds.contains($0.id) }
-        try writeLinks(links + preserved)
+        try writeLinks(safe + preserved)
     }
 
     /// Upsert a link: update if exists (by link.id), insert if new.
     public func upsertLink(_ link: Link) throws {
         var links = try readLinks()
-        if let index = links.firstIndex(where: { $0.id == link.id }) {
-            links[index] = link
+        let safe = preservingExternalFields(link, from: links)
+        if let index = links.firstIndex(where: { $0.id == safe.id }) {
+            links[index] = safe
         } else {
-            links.append(link)
+            links.append(safe)
         }
         try writeLinks(links)
+    }
+
+    /// Fields owned by out-of-process writers (the `kanban` CLI / agents), never by
+    /// the app: keep the on-disk value when the app rewrites a card it knows, so a
+    /// concurrent app edit can't clobber a `completedAt` handoff or a `labels` chip
+    /// the agent just set (independent of when the app's watcher adopts them).
+    private func preservingExternalFields(_ link: Link, from onDisk: [Link]) -> Link {
+        guard let disk = onDisk.first(where: { $0.id == link.id }) else { return link }
+        var merged = link
+        merged.completedAt = disk.completedAt
+        merged.labels = disk.labels
+        return merged
     }
 
     /// Update specific fields of a link by link.id.

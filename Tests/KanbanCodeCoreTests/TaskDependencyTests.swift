@@ -182,11 +182,45 @@ struct TaskDependencyTests {
         #expect(state.links["a"]?.completedAt == Date(timeIntervalSince1970: 5))
     }
 
+    @Test("dependencyState classifies blocked / ready / handed off / none")
+    func dependencyStates() {
+        let links = [
+            "a": card("a", column: .done),
+            "b": card("b", column: .backlog, dependsOn: ["a"]),        // dep Done → ready
+            "d": card("d", column: .backlog, dependsOn: ["e", "a"]),   // e not done → blocked 1
+            "e": card("e", column: .inProgress),
+            "f": card("f", column: .backlog),                          // no deps → none
+            "g": card("g", column: .inProgress, completedAt: Date(timeIntervalSince1970: 1)),
+        ]
+        #expect(TaskDependencies.dependencyState(of: links["b"]!, in: links) == .ready)
+        #expect(TaskDependencies.dependencyState(of: links["d"]!, in: links) == .blocked(1))
+        #expect(TaskDependencies.dependencyState(of: links["f"]!, in: links) == CardDependencyState.none)
+        #expect(TaskDependencies.dependencyState(of: links["g"]!, in: links) == .handedOff)
+    }
+
     @Test("dependsOn round-trips through Codable")
     func codableRoundTrip() throws {
         let original = card("b", dependsOn: ["a", "x"])
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(Link.self, from: data)
         #expect(decoded.dependsOn == ["a", "x"])
+    }
+
+    @Test("labels round-trip through Codable")
+    func labelsRoundTrip() throws {
+        var original = card("b")
+        original.labels = ["account", "in test"]
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(Link.self, from: data)
+        #expect(decoded.labels == ["account", "in test"])
+    }
+
+    @Test("externalCardsAppeared adopts labels for a known card")
+    func externalMergeAdoptsLabels() {
+        var state = stateWith([card("a", column: .inProgress)])
+        var disk = card("a", column: .inProgress)
+        disk.labels = ["sale_management", "waiting for Codex"]
+        _ = Reducer.reduce(state: &state, action: .externalCardsAppeared([disk]))
+        #expect(state.links["a"]?.labels == ["sale_management", "waiting for Codex"])
     }
 }

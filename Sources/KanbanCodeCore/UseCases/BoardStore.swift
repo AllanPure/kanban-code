@@ -232,7 +232,7 @@ public final class AppState: @unchecked Sendable {
             let session = link.sessionLink.flatMap { sessions[$0.sessionId] }
             let activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
             let rateLimited = link.projectPath.map { rateLimitedRepos.contains($0) } ?? false
-            return KanbanCodeCard(link: link, session: session, activityState: activity, isBusy: busyCards.contains(link.id), isRateLimited: rateLimited)
+            return KanbanCodeCard(link: link, session: session, activityState: activity, isBusy: busyCards.contains(link.id), isRateLimited: rateLimited, dependencyState: TaskDependencies.dependencyState(of: link, in: links))
         }
         if newCards != cards { cards = newCards }
 
@@ -784,9 +784,17 @@ public enum Reducer {
                         state.links[link.id] = link
                         changed = true
                     }
-                } else if let completed = link.completedAt, state.links[link.id]?.completedAt == nil {
-                    state.links[link.id]?.completedAt = completed
-                    changed = true
+                } else {
+                    // Adopt the disk-owned fields (set out-of-process by `kanban task
+                    // done` / `kanban task label`) so the board reflects them live.
+                    if link.completedAt != state.links[link.id]?.completedAt {
+                        state.links[link.id]?.completedAt = link.completedAt
+                        changed = true
+                    }
+                    if link.labels != state.links[link.id]?.labels {
+                        state.links[link.id]?.labels = link.labels
+                        changed = true
+                    }
                 }
             }
             if changed { state.rebuildCards() }

@@ -11,14 +11,17 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     public let isBusy: Bool
     /// True when this card's repo is affected by GitHub API rate limiting.
     public let isRateLimited: Bool
+    /// Status within the dependency DAG (blocked / ready / handed off), for board display.
+    public let dependencyState: CardDependencyState
 
-    public init(link: Link, session: Session? = nil, activityState: ActivityState? = nil, isBusy: Bool = false, isRateLimited: Bool = false) {
+    public init(link: Link, session: Session? = nil, activityState: ActivityState? = nil, isBusy: Bool = false, isRateLimited: Bool = false, dependencyState: CardDependencyState = .none) {
         self.id = link.id
         self.link = link
         self.session = session
         self.activityState = activityState
         self.isBusy = isBusy
         self.isRateLimited = isRateLimited
+        self.dependencyState = dependencyState
     }
 
     /// Whether Claude is confirmed actively working right now (not just waiting).

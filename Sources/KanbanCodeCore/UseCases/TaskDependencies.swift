@@ -1,5 +1,17 @@
 import Foundation
 
+/// A card's status within the dependency DAG, for at-a-glance display on the board.
+public enum CardDependencyState: Sendable, Equatable {
+    /// No dependencies (or not relevant to show).
+    case none
+    /// In Backlog with `count` dependencies not yet satisfied — waiting its turn.
+    case blocked(Int)
+    /// In Backlog with every dependency satisfied — about to auto-launch.
+    case ready
+    /// This task signalled its own work done (`completedAt`) — handed off to dependents.
+    case handedOff
+}
+
 /// Pure graph logic for the card execution-order DAG (`Link.dependsOn`).
 ///
 /// An edge "A depends on B" means B must reach Done before A may run. Sequential
@@ -25,6 +37,17 @@ public enum TaskDependencies {
             }
         }
         return false
+    }
+
+    /// The card's DAG status for board display (blocked / ready / handed off / none).
+    public static func dependencyState(of card: Link, in links: [String: Link]) -> CardDependencyState {
+        if card.completedAt != nil { return .handedOff }
+        guard let deps = card.dependsOn, !deps.isEmpty, card.column == .backlog else { return .none }
+        let unmet = deps.reduce(0) { acc, depId in
+            guard let dep = links[depId] else { return acc } // missing → satisfied
+            return acc + (isSatisfied(dep) ? 0 : 1)
+        }
+        return unmet == 0 ? .ready : .blocked(unmet)
     }
 
     /// Card ids ready to auto-launch: in Backlog, with at least one dependency, not

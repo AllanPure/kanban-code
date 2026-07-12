@@ -21,7 +21,17 @@ kanban channel send <name> "message" # broadcast (goes to everyone but you)
 kanban channel history <name> -n 50  # last 50 messages
 kanban dm <handle> "message"         # direct message another agent
 kanban dm history <handle>           # DM history with that handle
+
+kanban task label "in test"          # add a status chip to YOUR card (module, phase…)
+kanban task label "waiting for Codex"
+kanban task unlabel "in test"        # remove a chip
+kanban task done                     # signal your task finished → releases dependents
 ```
+
+**Self-report your state.** As you work, keep your card readable from the board with
+`kanban task label` — the module you're in, the phase ("analyzing", "in test",
+"waiting for Codex"). The card auto-detects itself from your tmux session. When your
+work is committed and a dependent should take over, run `kanban task done`.
 
 All commands accept `-j/--json` for machine-readable output.
 

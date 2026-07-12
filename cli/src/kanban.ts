@@ -144,10 +144,12 @@ taskCmd
   .option("--project <path>", "Project the card belongs to (defaults to the current directory)")
   .option("--body <text>", "Task description; becomes the launch prompt when the card is started")
   .option("--depends-on <ids...>", "Card ids this task depends on (runs once all are Done)")
+  .option("--label <labels...>", "Status label chip(s) — e.g. a module or phase")
   .option("-j, --json", "Output the created card as JSON")
   .action((name: string, opts) => {
     try {
       const projectPath = resolve(opts.project ?? process.cwd());
+      const labels: string[] | undefined = normalizeDeps(opts.label);
       // A brand-new card can't be part of a cycle (nothing depends on it yet), but
       // its dependencies must exist — catch orchestrator typos early.
       const dependsOn: string[] | undefined = normalizeDeps(opts.dependsOn);
@@ -170,6 +172,7 @@ taskCmd
         source: "manual",
         promptBody: opts.body || undefined,
         dependsOn,
+        labels,
         isRemote: false,
       };
       upsertCard(card);
@@ -261,6 +264,63 @@ taskCmd
       process.exit(1);
     }
   });
+
+taskCmd
+  .command("label")
+  .description("Add status label chip(s) to a card — e.g. an Odoo module or a phase like 'in test' / 'waiting for Codex'. Quote multi-word labels. Infers the current card from the tmux session.")
+  .argument("<labels...>", "Label text(s) to add")
+  .option("--card <id>", "Card id (defaults to the current session's card)")
+  .option("-j, --json", "Output the updated card as JSON")
+  .action((labels: string[], opts) => {
+    try {
+      const links = readLinks();
+      const card = resolveTaskCard(links, opts.card);
+      const set = new Set(card.labels ?? []);
+      for (const l of labels) { const t = l.trim(); if (t) set.add(t); }
+      card.labels = [...set];
+      card.updatedAt = isoNow();
+      upsertCard(card);
+      output(opts.json ? card : `Labeled ${card.id}: ${card.labels.join(" · ")}`, opts);
+    } catch (e) {
+      process.stderr.write(`Error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+taskCmd
+  .command("unlabel")
+  .description("Remove status label chip(s) from a card.")
+  .argument("<labels...>", "Label text(s) to remove")
+  .option("--card <id>", "Card id (defaults to the current session's card)")
+  .option("-j, --json", "Output the updated card as JSON")
+  .action((labels: string[], opts) => {
+    try {
+      const links = readLinks();
+      const card = resolveTaskCard(links, opts.card);
+      const remove = new Set(labels.map((l) => l.trim()));
+      const next = (card.labels ?? []).filter((l) => !remove.has(l));
+      card.labels = next.length ? next : undefined;
+      card.updatedAt = isoNow();
+      upsertCard(card);
+      output(opts.json ? card : `Labels on ${card.id}: ${(card.labels ?? []).join(" · ") || "(none)"}`, opts);
+    } catch (e) {
+      process.stderr.write(`Error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+/// Resolve the target card: an explicit id, else the card of the current tmux session.
+function resolveTaskCard(links: Link[], cardId?: string): Link {
+  if (cardId) {
+    const c = links.find((l) => l.id === cardId);
+    if (!c) throw new Error(`unknown card: ${cardId}`);
+    return c;
+  }
+  const session = currentTmuxSessionName();
+  const c = session ? cardForTmuxSession(links, session) : undefined;
+  if (!c) throw new Error("could not infer the current card (not inside a card's tmux session) — pass --card");
+  return c;
+}
 
 /// Commander collects `--depends-on a b c` into an array; normalize empties to undefined.
 function normalizeDeps(raw: unknown): string[] | undefined {

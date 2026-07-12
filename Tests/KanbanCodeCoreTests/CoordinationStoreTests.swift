@@ -78,6 +78,29 @@ struct CoordinationStoreTests {
         #expect(read[0].column == .done)
     }
 
+    @Test("a stale app write cannot clobber disk-owned labels / completedAt")
+    func writesPreserveDiskOwnedFields() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        let store = CoordinationStore(basePath: dir)
+
+        // Set out-of-process by the CLI (agent labelling itself / signalling done).
+        var external = Link(id: "card_x", name: "X", column: .inProgress)
+        external.labels = ["in test"]
+        external.completedAt = Date(timeIntervalSince1970: 10)
+        try await store.writeLinks([external])
+
+        // The app rewrites a stale in-memory version that never saw those fields.
+        let stale = Link(id: "card_x", name: "X renamed", column: .waiting)
+        try await store.upsertLink(stale)
+
+        let read = try await store.readLinks()
+        #expect(read[0].name == "X renamed")   // the app's own edits still land
+        #expect(read[0].column == .waiting)
+        #expect(read[0].labels == ["in test"]) // disk-owned fields are NOT clobbered
+        #expect(read[0].completedAt == Date(timeIntervalSince1970: 10))
+    }
+
     @Test("Synchronous snapshot retains tmux links for quit-time fallback")
     func synchronousSnapshotRetainsTmuxLinks() async throws {
         let dir = try makeTempDir()

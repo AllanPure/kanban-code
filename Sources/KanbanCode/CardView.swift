@@ -49,6 +49,11 @@ struct CardView: View {
             }
             .lineLimit(1)
 
+            // Declared status labels (module, phase…) set via `kanban task label`.
+            if let labels = card.link.labels, !labels.isEmpty {
+                HStack(spacing: 4) { CardLabelChips(labels: labels) }
+            }
+
             // Bottom row: badge + time + link indicators
             HStack(spacing: 6) {
                 if card.link.cardLabel == .session {
@@ -62,6 +67,8 @@ struct CardView: View {
                 Text(card.relativeTime)
                     .font(.app(.caption2))
                     .foregroundStyle(.tertiary)
+
+                CardStatusPills(card: card)
 
                 Spacer()
 
@@ -352,6 +359,110 @@ struct RateLimitBadge: View {
                 .padding(8)
                 .fixedSize()
         }
+    }
+}
+
+// MARK: - Card Status Pills (live activity + dependency state)
+
+/// At-a-glance status chips: what the agent is doing right now, and where the card
+/// sits in its dependency graph. Both are conditional — a card only shows what applies.
+struct CardStatusPills: View {
+    let card: KanbanCodeCard
+
+    var body: some View {
+        if let a = activity { StatusPill(text: a.text, color: a.color, pulse: a.pulse) }
+        if let d = dependency { StatusPill(text: d.text, color: d.color, systemImage: d.icon) }
+    }
+
+    /// What the session is doing right now — the key signal when juggling agents.
+    private var activity: (text: String, color: Color, pulse: Bool)? {
+        if card.link.isLaunching == true { return ("Launching", .accentColor, true) }
+        switch card.activityState {
+        case .activelyWorking: return ("Working", .green, true)
+        case .needsAttention:  return ("Needs you", .orange, true)
+        case .idleWaiting:     return ("Idle", .gray, false)
+        case .stale:           return ("Stale", .gray, false)
+        default:               return nil
+        }
+    }
+
+    /// Where the card sits in its dependency DAG.
+    private var dependency: (text: String, color: Color, icon: String)? {
+        switch card.dependencyState {
+        case .none:           return nil
+        case .blocked(let n): return ("Blocked ·\(n)", .orange, "hourglass")
+        case .ready:          return ("Ready", .green, "bolt.fill")
+        case .handedOff:      return ("Handed off", .blue, "checkmark.seal.fill")
+        }
+    }
+}
+
+/// Small capsule chip: an icon (or a colored, optionally pulsing dot) + a short label.
+struct StatusPill: View {
+    let text: String
+    let color: Color
+    var systemImage: String? = nil
+    var pulse: Bool = false
+    @State private var pulsing = false
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if let systemImage {
+                Image(systemName: systemImage).font(.app(size: 8, weight: .bold))
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: 6, height: 6)
+                    .opacity(pulse && pulsing ? 0.3 : 1)
+            }
+            Text(text).font(.app(size: 9, weight: .semibold))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 2)
+        .background(color.opacity(0.13), in: Capsule())
+        .fixedSize()
+        .onAppear {
+            guard pulse else { return }
+            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                pulsing = true
+            }
+        }
+    }
+}
+
+/// Declared status chips (module, phase like "in test" / "waiting for Codex"), set
+/// via `kanban task label`. Lightly tinted by keyword so common phases stand out.
+struct CardLabelChips: View {
+    let labels: [String]
+
+    var body: some View {
+        ForEach(labels.prefix(3), id: \.self) { label in
+            let color = tint(for: label)
+            HStack(spacing: 3) {
+                Image(systemName: "tag.fill").font(.app(size: 7))
+                Text(label).font(.app(size: 9, weight: .medium)).lineLimit(1)
+            }
+            .foregroundStyle(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.12), in: Capsule())
+            .fixedSize()
+        }
+        if labels.count > 3 {
+            Text(verbatim: "+\(labels.count - 3)")
+                .font(.app(size: 9, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func tint(for label: String) -> Color {
+        let l = label.lowercased()
+        if l.contains("test") { return .blue }
+        if l.contains("codex") || l.contains("review") || l.contains("revue") { return .purple }
+        if l.contains("wait") || l.contains("attente") || l.contains("block") || l.contains("bloqu") { return .orange }
+        if l.contains("done") || l.contains("fini") || l.contains("merg") { return .green }
+        return .gray
     }
 }
 
