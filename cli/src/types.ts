@@ -126,6 +126,9 @@ export interface Link {
   isLaunching?: boolean;
   /// Card ids this card depends on (execution-order DAG); runs once all are Done.
   dependsOn?: string[];
+  /// ISO timestamp set by `kanban task done` when the agent finishes its work —
+  /// releases this card's dependents, independent of the PR-gated Done column.
+  completedAt?: string;
 }
 
 export interface TmuxSession {

@@ -231,6 +231,13 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// nil or empty = no dependencies.
     public var dependsOn: [String]?
 
+    /// When the task's own work was signalled complete by its agent (`kanban task
+    /// done`), independent of the PR-gated Done column. This is what releases a
+    /// card's dependents in the auto-scheduler — so a linked chain hands off at
+    /// task/commit granularity and shares a single PR at the end, rather than
+    /// forcing a merged PR per step. nil = not yet completed.
+    public var completedAt: Date?
+
     // MARK: - Display
 
     /// Best display title from link data alone: name → promptBody → branch → PR title → session ID.
@@ -340,7 +347,8 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         pinnedSortOrder: Int? = nil,
         discoveredBranches: [String]? = nil,
         discoveredRepos: [String: String]? = nil,
-        dependsOn: [String]? = nil
+        dependsOn: [String]? = nil,
+        completedAt: Date? = nil
     ) {
         self.id = id
         self.name = name
@@ -371,6 +379,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.discoveredBranches = discoveredBranches
         self.discoveredRepos = discoveredRepos
         self.dependsOn = dependsOn
+        self.completedAt = completedAt
     }
 
     // MARK: - Backward-compatible Codable
@@ -379,7 +388,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, isRemote, isLaunching, sortOrder, pinnedAt, pinnedSortOrder
-        case discoveredBranches, discoveredRepos, assistant, apiServiceId, dependsOn
+        case discoveredBranches, discoveredRepos, assistant, apiServiceId, dependsOn, completedAt
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
         // Old format keys (for reading legacy format)
@@ -412,6 +421,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         discoveredBranches = try c.decodeIfPresent([String].self, forKey: .discoveredBranches)
         discoveredRepos = try c.decodeIfPresent([String: String].self, forKey: .discoveredRepos)
         dependsOn = try c.decodeIfPresent([String].self, forKey: .dependsOn)
+        completedAt = try c.decodeIfPresent(Date.self, forKey: .completedAt)
         assistant = try c.decodeIfPresent(CodingAssistant.self, forKey: .assistant)
         apiServiceId = try c.decodeIfPresent(String.self, forKey: .apiServiceId)
 
@@ -502,6 +512,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(discoveredBranches, forKey: .discoveredBranches)
         try c.encodeIfPresent(discoveredRepos, forKey: .discoveredRepos)
         try c.encodeIfPresent(dependsOn, forKey: .dependsOn)
+        try c.encodeIfPresent(completedAt, forKey: .completedAt)
         try c.encodeIfPresent(assistant, forKey: .assistant)
         try c.encodeIfPresent(apiServiceId, forKey: .apiServiceId)
 

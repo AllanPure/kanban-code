@@ -30,10 +30,17 @@ public enum TaskDependencies {
     /// Card ids ready to auto-launch: in Backlog, with at least one dependency, not
     /// already launching, and every dependency satisfied.
     ///
-    /// A dependency counts as satisfied when its card is Done — or no longer exists
-    /// (a deleted prerequisite must not deadlock the chain). Cards **without**
-    /// dependencies are deliberately excluded: the scheduler cascades dependents once
-    /// their prerequisites finish, while the roots of a graph are launched by the user.
+    /// A dependency counts as satisfied when its agent has signalled the task done
+    /// (`completedAt` set, via `kanban task done`) or its card reached the Done column
+    /// — or it no longer exists (a deleted prerequisite must not deadlock the chain).
+    /// The `completedAt` signal is what lets a linked chain hand off at task/commit
+    /// granularity and share one PR at the end, instead of forcing a merged PR per step.
+    /// Cards **without** dependencies are deliberately excluded: the scheduler cascades
+    /// dependents once their prerequisites finish, while the roots are launched by the user.
+    public static func isSatisfied(_ dep: Link) -> Bool {
+        dep.completedAt != nil || dep.column == .done
+    }
+
     public static func readyToLaunch(links: [String: Link]) -> [String] {
         links.values.compactMap { card -> String? in
             guard card.column == .backlog,
@@ -41,7 +48,7 @@ public enum TaskDependencies {
                   let deps = card.dependsOn, !deps.isEmpty else { return nil }
             let satisfied = deps.allSatisfy { depId in
                 guard let dep = links[depId] else { return true } // missing → satisfied
-                return dep.column == .done
+                return isSatisfied(dep)
             }
             return satisfied ? card.id : nil
         }

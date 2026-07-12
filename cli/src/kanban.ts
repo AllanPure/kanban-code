@@ -232,6 +232,36 @@ taskCmd
     }
   });
 
+taskCmd
+  .command("done")
+  .description("Signal this task is finished — releases its dependents in the board's auto-scheduler. Run it once your work is committed. Infers the current card from your tmux session.")
+  .argument("[card]", "Card id (defaults to the current session's card)")
+  .option("-j, --json", "Output the updated card as JSON")
+  .action((cardArg: string | undefined, opts) => {
+    try {
+      const links = readLinks();
+      let card: Link | undefined;
+      if (cardArg) {
+        card = links.find((l) => l.id === cardArg);
+        if (!card) throw new Error(`unknown card: ${cardArg}`);
+      } else {
+        const session = currentTmuxSessionName();
+        card = session ? cardForTmuxSession(links, session) : undefined;
+        if (!card) {
+          throw new Error("could not infer the current card (not inside a card's tmux session) — pass a card id");
+        }
+      }
+      const now = isoNow();
+      card.completedAt = card.completedAt ?? now; // monotonic — first signal wins
+      card.updatedAt = now;
+      upsertCard(card);
+      output(opts.json ? card : `Task "${card.name ?? card.id}" marked done — dependents will launch.`, opts);
+    } catch (e) {
+      process.stderr.write(`Error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
 /// Commander collects `--depends-on a b c` into an array; normalize empties to undefined.
 function normalizeDeps(raw: unknown): string[] | undefined {
   if (!Array.isArray(raw)) return undefined;

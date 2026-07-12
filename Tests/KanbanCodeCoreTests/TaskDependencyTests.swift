@@ -110,8 +110,8 @@ struct TaskDependencyTests {
 
     // MARK: - Auto-scheduler readiness
 
-    private func card(_ id: String, column: KanbanCodeColumn, dependsOn: [String]? = nil, isLaunching: Bool? = nil) -> Link {
-        Link(id: id, name: id, column: column, source: .manual, isLaunching: isLaunching, dependsOn: dependsOn)
+    private func card(_ id: String, column: KanbanCodeColumn, dependsOn: [String]? = nil, isLaunching: Bool? = nil, completedAt: Date? = nil) -> Link {
+        Link(id: id, name: id, column: column, source: .manual, isLaunching: isLaunching, dependsOn: dependsOn, completedAt: completedAt)
     }
 
     @Test("readyToLaunch fires only when all deps are Done")
@@ -158,6 +158,28 @@ struct TaskDependencyTests {
     func missingDepSatisfied() {
         let links = ["b": card("b", column: .backlog, dependsOn: ["ghost"])]
         #expect(TaskDependencies.readyToLaunch(links: links) == ["b"])
+    }
+
+    @Test("readyToLaunch fires on the agent's completion signal, before Done")
+    func readyOnCompletionSignal() {
+        // A is still In Progress (no merged PR, not Done) but its agent signalled done.
+        let links = [
+            "a": card("a", column: .inProgress, completedAt: Date(timeIntervalSince1970: 1)),
+            "b": card("b", column: .backlog, dependsOn: ["a"]),
+        ]
+        #expect(TaskDependencies.readyToLaunch(links: links) == ["b"])
+    }
+
+    @Test("externalCardsAppeared adopts completedAt for an already-known card")
+    func externalMergeAdoptsCompletion() {
+        var state = stateWith([card("a", column: .inProgress, dependsOn: nil)])
+        #expect(state.links["a"]?.completedAt == nil)
+
+        // The agent's `kanban task done` set completedAt on disk; the watcher re-reads.
+        let disk = [card("a", column: .inProgress, completedAt: Date(timeIntervalSince1970: 5))]
+        _ = Reducer.reduce(state: &state, action: .externalCardsAppeared(disk))
+
+        #expect(state.links["a"]?.completedAt == Date(timeIntervalSince1970: 5))
     }
 
     @Test("dependsOn round-trips through Codable")

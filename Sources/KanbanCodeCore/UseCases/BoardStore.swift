@@ -772,17 +772,24 @@ public enum Reducer {
             return [.upsertLink(link)]
 
         case .externalCardsAppeared(let links):
-            // Add-only: insert cards with unknown ids that aren't tombstoned. Never
-            // modify/remove app-managed cards — the app stays source of truth for
-            // everything it already holds; disk only introduces brand-new cards.
-            var added = false
-            for link in links where state.links[link.id] == nil && !state.deletedCardIds.contains(link.id) {
-                state.links[link.id] = link
-                added = true
+            // Add unknown, non-tombstoned cards. For cards the app already manages,
+            // the ONLY field adopted from disk is `completedAt` — a monotonic signal
+            // set out-of-process by `kanban task done` (the agent handing off to its
+            // dependents). Everything else stays in-memory source-of-truth, so the
+            // app's own writes round-trip through the watcher as a true no-op.
+            var changed = false
+            for link in links {
+                if state.links[link.id] == nil {
+                    if !state.deletedCardIds.contains(link.id) {
+                        state.links[link.id] = link
+                        changed = true
+                    }
+                } else if let completed = link.completedAt, state.links[link.id]?.completedAt == nil {
+                    state.links[link.id]?.completedAt = completed
+                    changed = true
+                }
             }
-            // Self-rebuild only when something changed (see needsRebuild): the app's
-            // own writes round-trip through the file watcher and must be a true no-op.
-            if added { state.rebuildCards() }
+            if changed { state.rebuildCards() }
             return []
 
         case .removeCardDependency(let cardId, let dependsOnId):

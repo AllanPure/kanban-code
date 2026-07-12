@@ -57,13 +57,26 @@ extension ContentView {
     /// drives `executeLaunch` directly, using the card's own worktree/remote defaults.
     func autoLaunchCard(cardId: String) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+
+        // Shared branch: if this card has no worktree of its own but a prerequisite
+        // does, run it IN that same worktree (no new branch). This is what lets a
+        // linked chain work on one branch and open a single PR at the end, instead of
+        // a branch/PR per step. Falls back to the card's own worktree/project otherwise.
+        let sharedWorktree: WorktreeLink? = card.link.worktreeLink == nil
+            ? (card.link.dependsOn ?? [])
+                .compactMap { store.state.links[$0]?.worktreeLink }
+                .first { !$0.path.isEmpty }
+            : nil
+
         let effectivePath: String
-        if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
+        if let shared = sharedWorktree {
+            effectivePath = shared.path
+        } else if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
             effectivePath = worktreePath
         } else {
             effectivePath = card.link.projectPath ?? NSHomeDirectory()
         }
-        KanbanCodeLog.info("scheduler", "auto-launching card=\(cardId.prefix(12)) — dependencies satisfied")
+        KanbanCodeLog.info("scheduler", "auto-launching card=\(cardId.prefix(12)) — dependencies satisfied\(sharedWorktree != nil ? " (shared worktree)" : "")")
 
         Task {
             let settings = try? await settingsStore.read()
@@ -74,7 +87,9 @@ extension ContentView {
             }
 
             let worktreeName: String?
-            if let branch = card.link.worktreeLink?.branch {
+            if sharedWorktree != nil {
+                worktreeName = nil // reuse the shared worktree — do not create a new one
+            } else if let branch = card.link.worktreeLink?.branch {
                 worktreeName = branch
             } else if let issueNum = card.link.issueLink?.number {
                 worktreeName = "issue-\(issueNum)"
