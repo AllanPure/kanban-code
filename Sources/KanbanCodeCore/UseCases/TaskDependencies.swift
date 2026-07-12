@@ -68,6 +68,7 @@ public enum TaskDependencies {
         links.values.compactMap { card -> String? in
             guard card.column == .backlog,
                   !(card.isLaunching ?? false),
+                  card.sessionLink == nil, card.tmuxLink == nil,  // never re-launch an already-started card
                   let deps = card.dependsOn, !deps.isEmpty else { return nil }
             let satisfied = deps.allSatisfy { depId in
                 guard let dep = links[depId] else { return true } // missing → satisfied

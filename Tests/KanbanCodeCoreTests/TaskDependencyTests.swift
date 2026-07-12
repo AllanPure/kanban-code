@@ -184,6 +184,14 @@ struct TaskDependencyTests {
         #expect(TaskDependencies.readyToLaunch(links: links).isEmpty)
     }
 
+    @Test("a card that already has a session is never re-launched")
+    func alreadyLaunchedNotReLaunched() {
+        var b = card("b", column: .backlog, dependsOn: ["a"])
+        b.sessionLink = SessionLink(sessionId: "s1")
+        let links = ["a": card("a", column: .done), "b": b]
+        #expect(TaskDependencies.readyToLaunch(links: links).isEmpty)
+    }
+
     @Test("a missing (deleted) dependency does not deadlock the chain")
     func missingDepSatisfied() {
         let links = ["b": card("b", column: .backlog, dependsOn: ["ghost"])]
