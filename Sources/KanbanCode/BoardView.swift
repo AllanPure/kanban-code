@@ -197,6 +197,9 @@ struct BoardView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 52)
                 .padding(.bottom, 16)
+                .backgroundPreferenceValue(CardBoundsPreferenceKey.self) { anchors in
+                    dependencyArrows(anchors)
+                }
             }
             .onChange(of: store.state.selectedCardId) {
                 // Scroll to the column containing the selected card
@@ -287,6 +290,65 @@ struct BoardView: View {
                 )
             }
         }
+    }
+
+    // MARK: - Dependency graph arrows
+
+    /// Draw an arrow for every `dependsOn` edge — from the prerequisite card to the
+    /// dependent card — resolved into the board's coordinate space. Sits behind the
+    /// cards so it shows through the gaps; endpoints are clipped to each card's edge.
+    @ViewBuilder
+    private func dependencyArrows(_ anchors: [String: Anchor<CGRect>]) -> some View {
+        GeometryReader { proxy in
+            Canvas { ctx, _ in
+                for card in store.state.cards {
+                    guard let deps = card.link.dependsOn, !deps.isEmpty,
+                          let toAnchor = anchors[card.id] else { continue }
+                    let toRect = proxy[toAnchor]
+                    for depId in deps {
+                        guard let fromAnchor = anchors[depId] else { continue }
+                        drawArrow(&ctx, from: proxy[fromAnchor], to: toRect)
+                    }
+                }
+            }
+            .allowsHitTesting(false)
+        }
+    }
+
+    /// Point on `rect`'s edge along the ray from its center toward `target`.
+    private func edgePoint(of rect: CGRect, toward target: CGPoint) -> CGPoint {
+        let c = CGPoint(x: rect.midX, y: rect.midY)
+        let dx = target.x - c.x, dy = target.y - c.y
+        guard dx != 0 || dy != 0 else { return c }
+        let sx = dx != 0 ? (rect.width / 2) / abs(dx) : .greatestFiniteMagnitude
+        let sy = dy != 0 ? (rect.height / 2) / abs(dy) : .greatestFiniteMagnitude
+        let s = min(sx, sy)
+        return CGPoint(x: c.x + dx * s, y: c.y + dy * s)
+    }
+
+    private func drawArrow(_ ctx: inout GraphicsContext, from: CGRect, to: CGRect) {
+        let fromC = CGPoint(x: from.midX, y: from.midY)
+        let toC = CGPoint(x: to.midX, y: to.midY)
+        let start = edgePoint(of: from, toward: toC)
+        let end = edgePoint(of: to, toward: fromC)
+        let color = Color.accentColor.opacity(0.55)
+
+        var line = Path()
+        line.move(to: start)
+        line.addLine(to: end)
+        ctx.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [5, 4]))
+
+        // Arrowhead pointing into the dependent card.
+        let angle = atan2(end.y - start.y, end.x - start.x)
+        let headLen: CGFloat = 8
+        var head = Path()
+        head.move(to: end)
+        head.addLine(to: CGPoint(x: end.x + cos(angle + .pi * 0.85) * headLen,
+                                 y: end.y + sin(angle + .pi * 0.85) * headLen))
+        head.move(to: end)
+        head.addLine(to: CGPoint(x: end.x + cos(angle - .pi * 0.85) * headLen,
+                                 y: end.y + sin(angle - .pi * 0.85) * headLen))
+        ctx.stroke(head, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
 
     private func pinnedCardView(for card: KanbanCodeCard) -> CardView {

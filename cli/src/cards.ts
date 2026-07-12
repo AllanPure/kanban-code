@@ -86,3 +86,25 @@ export function upsertCard(card: Link): void {
 export function findCardByName(name: string): Link | undefined {
   return readLinks().find((l) => l.name === name);
 }
+
+/// Would adding the edge "`cardId` depends on `dependsOnId`" create a cycle in the
+/// dependency DAG? True for a self-edge, or when `dependsOnId` already (transitively)
+/// depends on `cardId`. Mirrors `TaskDependencies.wouldCreateCycle` in the Swift core.
+export function wouldCreateCycle(
+  links: Link[],
+  from: string,
+  to: string,
+): boolean {
+  if (from === to) return true;
+  const byId = new Map(links.map((l) => [l.id, l]));
+  const stack = [to];
+  const seen = new Set<string>();
+  while (stack.length) {
+    const current = stack.pop()!;
+    if (current === from) return true;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    for (const dep of byId.get(current)?.dependsOn ?? []) stack.push(dep);
+  }
+  return false;
+}

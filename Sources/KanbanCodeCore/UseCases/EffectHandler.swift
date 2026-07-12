@@ -48,7 +48,10 @@ public actor EffectHandler {
         switch effect {
         case .persistLinks(let links):
             do {
-                try await coordinationStore.writeLinks(links)
+                // Preserve cards that exist on disk but not in this in-memory snapshot
+                // (e.g. created by the `kanban` CLI moments ago, before the file watcher
+                // merged them). A plain overwrite here would clobber them.
+                try await coordinationStore.mergeAndWriteLinks(links)
             } catch {
                 KanbanCodeLog.warn("effect", "persistLinks failed: \(error)")
             }

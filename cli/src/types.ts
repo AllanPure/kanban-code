@@ -124,6 +124,8 @@ export interface Link {
   sortOrder?: number;
   assistant?: CodingAssistant;
   isLaunching?: boolean;
+  /// Card ids this card depends on (execution-order DAG); runs once all are Done.
+  dependsOn?: string[];
 }
 
 export interface TmuxSession {

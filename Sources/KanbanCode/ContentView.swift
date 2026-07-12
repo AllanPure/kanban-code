@@ -108,6 +108,9 @@ struct ContentView: View {
     @State var pendingTerminalSession: String?
     @State var showAddLinkCardId: String?
     @State var launchConfig: LaunchConfig?
+    /// Cards the auto-scheduler has already kicked off, to avoid double-launching
+    /// during the async window before `.launchCard` flips the card out of Backlog.
+    @State var autoLaunchedCardIds: Set<String> = []
     @State var syncStatuses: [String: SyncStatus] = [:]
     @State var isSyncRefreshing = false
     @State var showSyncPopover = false
@@ -147,6 +150,7 @@ struct ContentView: View {
     let mutagenAdapter = MutagenAdapter()
     let hookEventsPath: String
     let settingsFilePath: String
+    let linksFilePath: String
 
     @State var pendingWorktreeCleanup: WorktreeCleanupInfo?
     @State var shouldFocusTerminal = false
@@ -285,6 +289,8 @@ struct ContentView: View {
             .appendingPathComponent(".kanban-code/hook-events.jsonl")
         self.settingsFilePath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban-code/settings.json")
+        self.linksFilePath = (NSHomeDirectory() as NSString)
+            .appendingPathComponent(".kanban-code/links.json")
 
         // Set sidebar visibility synchronously too
         if persistedExpanded && UserDefaults.standard.bool(forKey: "showBoardInExpanded") {
@@ -1231,6 +1237,9 @@ struct ContentView: View {
             .task(id: "settings-watcher") {
                 await watchSettingsFile(path: settingsFilePath)
             }
+            .task(id: "links-watcher") {
+                await watchLinksFile(path: linksFilePath)
+            }
             .task(id: "refresh-timer") {
                 while !Task.isCancelled {
                     // Adaptive: 3s when active, 10s when backgrounded
@@ -1238,6 +1247,7 @@ struct ContentView: View {
                     try? await Task.sleep(for: interval)
                     guard !Task.isCancelled else { break }
                     await store.reconcile()
+                    runAutoScheduler()
                     systemTray.update()
                 }
             }
@@ -1302,6 +1312,11 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeNewTask).receive(on: RunLoop.main)) { _ in
                 presentNewTask()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeLinksChanged).receive(on: RunLoop.main)) { _ in
+                // links.json changed on disk (e.g. `kanban task create` from a console
+                // orchestrator) → merge any brand-new cards into the live board.
+                Task { await store.mergeExternalCards() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeHookEvent).receive(on: RunLoop.main)) { _ in
                 Task {
@@ -1598,6 +1613,47 @@ struct ContentView: View {
         KanbanCodeLog.info("watcher", "File watcher loop exited (cancelled?)")
 
         close(fd)
+    }
+
+    /// Watch ~/.kanban-code/links.json for external writes → merge new cards live.
+    ///
+    /// `writeLinks` replaces the file atomically (tmp + rename), which invalidates a
+    /// held fd, so we handle one event then re-open to keep watching the new inode.
+    /// `mergeExternalCards` re-reads the whole file, so a coalesced burst still lands
+    /// the latest state. nonisolated: the DispatchSource handler must not inherit
+    /// @MainActor (it runs on a background queue).
+    private nonisolated func watchLinksFile(path: String) async {
+        while !Task.isCancelled {
+            guard FileManager.default.fileExists(atPath: path) else {
+                try? await Task.sleep(for: .seconds(1))
+                continue
+            }
+            guard let fd = open(path, O_EVTONLY) as Int32?, fd >= 0 else {
+                try? await Task.sleep(for: .seconds(1))
+                continue
+            }
+
+            let source = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: fd,
+                eventMask: [.write, .extend, .rename, .delete],
+                queue: .global(qos: .utility)
+            )
+            let events = AsyncStream<Void> { continuation in
+                source.setEventHandler { continuation.yield() }
+                source.setCancelHandler { continuation.finish() }
+                continuation.onTermination = { @Sendable _ in source.cancel() }
+                source.resume()
+            }
+
+            for await _ in events {
+                NotificationCenter.default.post(name: .kanbanCodeLinksChanged, object: nil)
+                break // re-open: the atomic rename has invalidated this fd
+            }
+
+            source.cancel()
+            close(fd)
+        }
+        KanbanCodeLog.info("watcher", "links.json watcher exited (cancelled?)")
     }
 
     /// Watch ~/.kanban-code/settings.json for changes → hot-reload.

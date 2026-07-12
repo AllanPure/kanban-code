@@ -225,6 +225,12 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// Prevents background reconciliation from overriding card state mid-launch.
     public var isLaunching: Bool?
 
+    /// Card IDs this card depends on: it may only run once all of them are Done.
+    /// These are the edges of the execution-order DAG across cards (sequential when
+    /// B depends on A; parallel when C and D both depend on A but not each other).
+    /// nil or empty = no dependencies.
+    public var dependsOn: [String]?
+
     // MARK: - Display
 
     /// Best display title from link data alone: name → promptBody → branch → PR title → session ID.
@@ -333,7 +339,8 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         pinnedAt: Date? = nil,
         pinnedSortOrder: Int? = nil,
         discoveredBranches: [String]? = nil,
-        discoveredRepos: [String: String]? = nil
+        discoveredRepos: [String: String]? = nil,
+        dependsOn: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -363,6 +370,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.pinnedSortOrder = pinnedSortOrder
         self.discoveredBranches = discoveredBranches
         self.discoveredRepos = discoveredRepos
+        self.dependsOn = dependsOn
     }
 
     // MARK: - Backward-compatible Codable
@@ -371,7 +379,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         // Card-level
         case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, isRemote, isLaunching, sortOrder, pinnedAt, pinnedSortOrder
-        case discoveredBranches, discoveredRepos, assistant, apiServiceId
+        case discoveredBranches, discoveredRepos, assistant, apiServiceId, dependsOn
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
         // Old format keys (for reading legacy format)
@@ -403,6 +411,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         pinnedSortOrder = try c.decodeIfPresent(Int.self, forKey: .pinnedSortOrder)
         discoveredBranches = try c.decodeIfPresent([String].self, forKey: .discoveredBranches)
         discoveredRepos = try c.decodeIfPresent([String: String].self, forKey: .discoveredRepos)
+        dependsOn = try c.decodeIfPresent([String].self, forKey: .dependsOn)
         assistant = try c.decodeIfPresent(CodingAssistant.self, forKey: .assistant)
         apiServiceId = try c.decodeIfPresent(String.self, forKey: .apiServiceId)
 
@@ -492,6 +501,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(pinnedSortOrder, forKey: .pinnedSortOrder)
         try c.encodeIfPresent(discoveredBranches, forKey: .discoveredBranches)
         try c.encodeIfPresent(discoveredRepos, forKey: .discoveredRepos)
+        try c.encodeIfPresent(dependsOn, forKey: .dependsOn)
         try c.encodeIfPresent(assistant, forKey: .assistant)
         try c.encodeIfPresent(apiServiceId, forKey: .apiServiceId)
 

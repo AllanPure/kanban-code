@@ -178,6 +178,19 @@ public actor CoordinationStore {
         try readLinks().first { $0.sessionLink?.sessionId == sessionId }
     }
 
+    /// Write a full in-memory snapshot without clobbering cards that only exist on
+    /// disk. Any on-disk card whose id is NOT in `links` is preserved and appended —
+    /// these are cards created out-of-process (e.g. by the `kanban` CLI) that the app
+    /// hasn't merged into memory yet. Deletions never reach here (they go through the
+    /// surgical `removeLink`), so a deleted card is already absent from disk and is not
+    /// resurrected. Used by the `.persistLinks` effect.
+    public func mergeAndWriteLinks(_ links: [Link]) throws {
+        let incomingIds = Set(links.map(\.id))
+        let onDisk = (try? readLinks()) ?? []
+        let preserved = onDisk.filter { !incomingIds.contains($0.id) }
+        try writeLinks(links + preserved)
+    }
+
     /// Upsert a link: update if exists (by link.id), insert if new.
     public func upsertLink(_ link: Link) throws {
         var links = try readLinks()

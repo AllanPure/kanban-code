@@ -39,7 +39,9 @@ import { runSlackBridge } from "./slack/bridge.js";
 import { announceToSlack, announceRawToSlack } from "./slack/announce.js";
 import { SlackClient } from "./slack/client.js";
 import { postToSlack } from "./slack/post.js";
-import type { KanbanColumn, Link } from "./types.js";
+import type { KanbanColumn, Link, ManualOverrides } from "./types.js";
+import { upsertCard, isoNow, wouldCreateCycle } from "./cards.js";
+import { generateKsuid } from "./ksuid.js";
 import {
   createChannel,
   deleteChannel,
@@ -114,6 +116,128 @@ program
       process.exit(1);
     }
   });
+
+// ── kanban task ──────────────────────────────────────────────────────
+//
+// Create backlog cards programmatically — the primitive an orchestrator (in the
+// app or a console Claude) uses to delegate work: it decomposes a task and calls
+// `kanban task create` once per sub-task. Cards land in the Backlog column with no
+// session; the user launches them from the app when ready.
+
+/// No manual overrides except `name` — the user (or orchestrator) set the title,
+/// so reconciliation must not auto-rename the card from a discovered resource.
+const DEFAULT_TASK_OVERRIDES: ManualOverrides = {
+  worktreePath: false,
+  tmuxSession: false,
+  name: true,
+  column: false,
+  prLink: false,
+  issueLink: false,
+};
+
+const taskCmd = program.command("task").description("Create backlog cards (tasks)");
+
+taskCmd
+  .command("create")
+  .description("Create a Backlog card. Prints the new card id.")
+  .argument("<name>", "Task title (the card name)")
+  .option("--project <path>", "Project the card belongs to (defaults to the current directory)")
+  .option("--body <text>", "Task description; becomes the launch prompt when the card is started")
+  .option("--depends-on <ids...>", "Card ids this task depends on (runs once all are Done)")
+  .option("-j, --json", "Output the created card as JSON")
+  .action((name: string, opts) => {
+    try {
+      const projectPath = resolve(opts.project ?? process.cwd());
+      // A brand-new card can't be part of a cycle (nothing depends on it yet), but
+      // its dependencies must exist — catch orchestrator typos early.
+      const dependsOn: string[] | undefined = normalizeDeps(opts.dependsOn);
+      if (dependsOn) {
+        const known = new Set(readLinks().map((l) => l.id));
+        const missing = dependsOn.filter((id) => !known.has(id));
+        if (missing.length) throw new Error(`unknown --depends-on card id(s): ${missing.join(", ")}`);
+      }
+      const now = isoNow();
+      const card: Link = {
+        id: generateKsuid("card"),
+        name,
+        projectPath,
+        column: "backlog",
+        createdAt: now,
+        updatedAt: now,
+        lastActivity: now,
+        manualOverrides: { ...DEFAULT_TASK_OVERRIDES },
+        manuallyArchived: false,
+        source: "manual",
+        promptBody: opts.body || undefined,
+        dependsOn,
+        isRemote: false,
+      };
+      upsertCard(card);
+      output(opts.json ? card : `Created backlog task "${name}" (card ${card.id})`, opts);
+    } catch (e) {
+      process.stderr.write(`Error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+taskCmd
+  .command("link")
+  .description("Add a dependency edge: <card> runs only once <dependency> is Done.")
+  .argument("<card>", "Card id that depends on another")
+  .requiredOption("--on <dependency>", "Card id that must finish first")
+  .option("-j, --json", "Output the updated card as JSON")
+  .action((cardId: string, opts) => {
+    try {
+      const links = readLinks();
+      const card = links.find((l) => l.id === cardId);
+      if (!card) throw new Error(`unknown card: ${cardId}`);
+      const dep: string = opts.on;
+      if (!links.some((l) => l.id === dep)) throw new Error(`unknown dependency card: ${dep}`);
+      if (cardId === dep) throw new Error("a card cannot depend on itself");
+      if (wouldCreateCycle(links, cardId, dep)) {
+        throw new Error(`edge would create a dependency cycle (${dep} already depends on ${cardId})`);
+      }
+      const deps = card.dependsOn ?? [];
+      if (!deps.includes(dep)) deps.push(dep);
+      card.dependsOn = deps;
+      card.updatedAt = isoNow();
+      upsertCard(card);
+      output(opts.json ? card : `Linked ${cardId} → depends on ${dep}`, opts);
+    } catch (e) {
+      process.stderr.write(`Error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+taskCmd
+  .command("unlink")
+  .description("Remove a dependency edge.")
+  .argument("<card>", "Card id to remove a dependency from")
+  .requiredOption("--on <dependency>", "Card id to stop depending on")
+  .option("-j, --json", "Output the updated card as JSON")
+  .action((cardId: string, opts) => {
+    try {
+      const links = readLinks();
+      const card = links.find((l) => l.id === cardId);
+      if (!card) throw new Error(`unknown card: ${cardId}`);
+      const dep: string = opts.on;
+      const next = (card.dependsOn ?? []).filter((id) => id !== dep);
+      card.dependsOn = next.length ? next : undefined;
+      card.updatedAt = isoNow();
+      upsertCard(card);
+      output(opts.json ? card : `Unlinked ${cardId} ⇎ ${dep}`, opts);
+    } catch (e) {
+      process.stderr.write(`Error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+/// Commander collects `--depends-on a b c` into an array; normalize empties to undefined.
+function normalizeDeps(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const ids = raw.filter((x): x is string => typeof x === "string" && x.length > 0);
+  return ids.length ? ids : undefined;
+}
 
 // Also support bare `kanban .` and `kanban /path` (no subcommand)
 // Handled via default command at the bottom

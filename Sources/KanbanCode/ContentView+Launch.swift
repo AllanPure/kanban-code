@@ -52,6 +52,60 @@ extension ContentView {
         }
     }
 
+    /// Auto-launch a backlog card whose dependencies are all Done — the scheduler path.
+    /// Mirrors `startCard`'s parameter computation but skips the confirmation dialog and
+    /// drives `executeLaunch` directly, using the card's own worktree/remote defaults.
+    func autoLaunchCard(cardId: String) {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+        let effectivePath: String
+        if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
+            effectivePath = worktreePath
+        } else {
+            effectivePath = card.link.projectPath ?? NSHomeDirectory()
+        }
+        KanbanCodeLog.info("scheduler", "auto-launching card=\(cardId.prefix(12)) — dependencies satisfied")
+
+        Task {
+            let settings = try? await settingsStore.read()
+            let project = settings?.projects.first(where: { $0.path == (card.link.projectPath ?? effectivePath) })
+            var prompt = PromptBuilder.buildPrompt(card: card.link, project: project, settings: settings)
+            if prompt.isEmpty {
+                prompt = card.link.promptBody ?? card.link.name ?? ""
+            }
+
+            let worktreeName: String?
+            if let branch = card.link.worktreeLink?.branch {
+                worktreeName = branch
+            } else if let issueNum = card.link.issueLink?.number {
+                worktreeName = "issue-\(issueNum)"
+            } else {
+                worktreeName = nil
+            }
+
+            executeLaunch(
+                cardId: cardId,
+                prompt: prompt,
+                projectPath: effectivePath,
+                worktreeName: worktreeName,
+                assistant: card.link.effectiveAssistant,
+                serviceIdOverride: card.link.apiServiceId
+            )
+        }
+    }
+
+    /// Launch every backlog card whose dependencies are now all Done. Called on each
+    /// reconcile tick — cheap (a pure pass over `links`). The guard set covers the
+    /// async launch window and self-prunes once a launch takes effect (the card leaves
+    /// the ready set), so a legitimate future re-launch is never blocked forever.
+    func runAutoScheduler() {
+        let ready = Set(TaskDependencies.readyToLaunch(links: store.state.links))
+        autoLaunchedCardIds.formIntersection(ready)
+        for cardId in ready where !autoLaunchedCardIds.contains(cardId) {
+            autoLaunchedCardIds.insert(cardId)
+            autoLaunchCard(cardId: cardId)
+        }
+    }
+
     func executeLaunch(cardId: String, prompt: String, projectPath: String, worktreeName: String?, runRemotely: Bool = true, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil) {
         // IMMEDIATE state update via reducer — no more dual memory+disk writes
         store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))

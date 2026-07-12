@@ -358,6 +358,10 @@ public enum Action: Sendable {
     case resumeCard(cardId: String)
     case moveCard(cardId: String, to: KanbanCodeColumn)
     case renameCard(cardId: String, name: String)
+    /// Add a dependency edge: `cardId` may only run once `dependsOnId` is Done.
+    /// No-op if it would create a cycle, is a self-edge, or already exists.
+    case addCardDependency(cardId: String, dependsOnId: String)
+    case removeCardDependency(cardId: String, dependsOnId: String)
     case setCardPinned(cardId: String, isPinned: Bool)
     case archiveCard(cardId: String)
     case deleteCard(cardId: String)
@@ -408,6 +412,10 @@ public enum Action: Sendable {
 
     // Background reconciliation
     case reconciled(ReconciliationResult)
+    /// Cards found in links.json that the app doesn't yet know about (e.g. created
+    /// by the `kanban` CLI while the app runs). Add-only merge — never touches or
+    /// removes cards the app already manages.
+    case externalCardsAppeared([Link])
     case gitHubIssuesUpdated(links: [Link])
     case activityChanged([String: ActivityState]) // sessionId → state
 
@@ -746,6 +754,45 @@ public enum Reducer {
                 effects.append(.updateSessionIndex(sessionId: sessionId, name: name))
             }
             return effects
+
+        case .addCardDependency(let cardId, let dependsOnId):
+            // Both cards must exist; reject self-edges, duplicates, and any edge that
+            // would introduce a cycle in the DAG (the scheduler must always be able to
+            // resolve an execution order).
+            guard var link = state.links[cardId], state.links[dependsOnId] != nil,
+                  cardId != dependsOnId else { return [] }
+            var deps = link.dependsOn ?? []
+            guard !deps.contains(dependsOnId),
+                  !TaskDependencies.wouldCreateCycle(links: state.links, from: cardId, to: dependsOnId)
+            else { return [] }
+            deps.append(dependsOnId)
+            link.dependsOn = deps
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
+
+        case .externalCardsAppeared(let links):
+            // Add-only: insert cards with unknown ids that aren't tombstoned. Never
+            // modify/remove app-managed cards — the app stays source of truth for
+            // everything it already holds; disk only introduces brand-new cards.
+            var added = false
+            for link in links where state.links[link.id] == nil && !state.deletedCardIds.contains(link.id) {
+                state.links[link.id] = link
+                added = true
+            }
+            // Self-rebuild only when something changed (see needsRebuild): the app's
+            // own writes round-trip through the file watcher and must be a true no-op.
+            if added { state.rebuildCards() }
+            return []
+
+        case .removeCardDependency(let cardId, let dependsOnId):
+            guard var link = state.links[cardId], var deps = link.dependsOn,
+                  deps.contains(dependsOnId) else { return [] }
+            deps.removeAll { $0 == dependsOnId }
+            link.dependsOn = deps.isEmpty ? nil : deps
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
 
         case .setCardPinned(let cardId, let isPinned):
             guard var link = state.links[cardId] else { return [] }
@@ -2123,10 +2170,11 @@ public final class BoardStore: @unchecked Sendable {
     /// Actions that only toggle UI state and don't affect card data — skip rebuildCards().
     private static func needsRebuild(_ action: Action) -> Bool {
         switch action {
-        case .reconciled, .setRateLimitedRepos:
+        case .reconciled, .setRateLimitedRepos, .externalCardsAppeared:
             // These reducers diff their card inputs and rebuild only when the
             // derived card snapshots can actually change. A periodic PR/status
-            // pass that produces the same links must not relayout the board.
+            // pass (or a links.json write that adds nothing new) must not relayout
+            // the board.
             return false
         case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
              .showDialog, .dismissDialog, .setError, .setLoading, .setIsRefreshingBacklog:
@@ -2282,6 +2330,21 @@ public final class BoardStore: @unchecked Sendable {
                 }
                 state.rebuildCards()
             }
+        }
+    }
+
+    // MARK: - External cards (live links.json reload)
+
+    /// Read links.json and merge in any cards the app doesn't yet know about — cards
+    /// created while the app runs (e.g. by the `kanban` CLI / an orchestrator). Add-only
+    /// via `.externalCardsAppeared`; the file watcher calls this on every links.json write.
+    public func mergeExternalCards() async {
+        guard let links = try? await coordinationStore.readLinks(), !links.isEmpty else { return }
+        let before = state.links.count
+        dispatch(.externalCardsAppeared(links))
+        let added = state.links.count - before
+        if added > 0 {
+            KanbanCodeLog.info("links-watcher", "merged \(added) external card(s) from links.json")
         }
     }
 

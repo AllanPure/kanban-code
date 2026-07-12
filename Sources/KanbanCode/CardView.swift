@@ -124,6 +124,17 @@ struct CardView: View {
                 enabledAssistants: enabledAssistants
             )
         }
+        // Report this card's frame so BoardView can draw dependency arrows between cards.
+        .anchorPreference(key: CardBoundsPreferenceKey.self, value: .bounds) { [card.id: $0] }
+    }
+}
+
+/// Collects each card's bounds (keyed by card id) so the board can resolve them into
+/// a shared coordinate space and draw the dependency-graph arrows.
+struct CardBoundsPreferenceKey: PreferenceKey {
+    static var defaultValue: [String: Anchor<CGRect>] { [:] }
+    static func reduce(value: inout [String: Anchor<CGRect>], nextValue: () -> [String: Anchor<CGRect>]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 
