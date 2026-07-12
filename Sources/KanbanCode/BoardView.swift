@@ -197,7 +197,7 @@ struct BoardView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 52)
                 .padding(.bottom, 16)
-                .backgroundPreferenceValue(CardBoundsPreferenceKey.self) { anchors in
+                .overlayPreferenceValue(CardBoundsPreferenceKey.self) { anchors in
                     dependencyArrows(anchors)
                 }
             }
@@ -315,39 +315,38 @@ struct BoardView: View {
         }
     }
 
-    /// Point on `rect`'s edge along the ray from its center toward `target`.
-    private func edgePoint(of rect: CGRect, toward target: CGPoint) -> CGPoint {
-        let c = CGPoint(x: rect.midX, y: rect.midY)
-        let dx = target.x - c.x, dy = target.y - c.y
-        guard dx != 0 || dy != 0 else { return c }
-        let sx = dx != 0 ? (rect.width / 2) / abs(dx) : .greatestFiniteMagnitude
-        let sy = dy != 0 ? (rect.height / 2) / abs(dy) : .greatestFiniteMagnitude
-        let s = min(sx, sy)
-        return CGPoint(x: c.x + dx * s, y: c.y + dy * s)
-    }
-
+    /// Draw one dependency edge as an arc bowing into the right-hand gutter, from the
+    /// prerequisite's right edge to the dependent's right edge, arrowhead on the
+    /// dependent. Bowing outward (scaled by the vertical span) keeps parallel edges
+    /// from stacking on top of each other and keeps the card faces clear.
     private func drawArrow(_ ctx: inout GraphicsContext, from: CGRect, to: CGRect) {
-        let fromC = CGPoint(x: from.midX, y: from.midY)
-        let toC = CGPoint(x: to.midX, y: to.midY)
-        let start = edgePoint(of: from, toward: toC)
-        let end = edgePoint(of: to, toward: fromC)
-        let color = Color.accentColor.opacity(0.55)
+        // Anchor just OUTSIDE the right edge so the arcs live in the gutter, clear of
+        // the cards' play buttons.
+        let gap: CGFloat = 3
+        let start = CGPoint(x: from.maxX + gap, y: from.midY)
+        let end = CGPoint(x: to.maxX + gap, y: to.midY)
+        let color = Color.accentColor.opacity(0.75)
+
+        // Control point out to the right; longer edges bow further so they nest.
+        let span = abs(end.y - start.y)
+        let bow = min(120, 30 + span * 0.18)
+        let control = CGPoint(x: max(start.x, end.x) + bow, y: (start.y + end.y) / 2)
 
         var line = Path()
         line.move(to: start)
-        line.addLine(to: end)
-        ctx.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [5, 4]))
+        line.addQuadCurve(to: end, control: control)
+        ctx.stroke(line, with: .color(color), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
 
-        // Arrowhead pointing into the dependent card.
-        let angle = atan2(end.y - start.y, end.x - start.x)
+        // Arrowhead along the curve's tangent at the dependent end.
+        let angle = atan2(end.y - control.y, end.x - control.x)
         let headLen: CGFloat = 8
         var head = Path()
         head.move(to: end)
-        head.addLine(to: CGPoint(x: end.x + cos(angle + .pi * 0.85) * headLen,
-                                 y: end.y + sin(angle + .pi * 0.85) * headLen))
+        head.addLine(to: CGPoint(x: end.x + cos(angle + .pi * 0.82) * headLen,
+                                 y: end.y + sin(angle + .pi * 0.82) * headLen))
         head.move(to: end)
-        head.addLine(to: CGPoint(x: end.x + cos(angle - .pi * 0.85) * headLen,
-                                 y: end.y + sin(angle - .pi * 0.85) * headLen))
+        head.addLine(to: CGPoint(x: end.x + cos(angle - .pi * 0.82) * headLen,
+                                 y: end.y + sin(angle - .pi * 0.82) * headLen))
         ctx.stroke(head, with: .color(color), style: StrokeStyle(lineWidth: 2, lineCap: .round))
     }
 
