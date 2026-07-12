@@ -210,6 +210,20 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         send(data: pasteEnd[0...])
     }
 
+    // MARK: - Suppress hover motion reporting
+
+    /// Drop no-button mouse-motion (hover) reporting to the pane.
+    ///
+    /// tmux + Claude Code enable any-event mouse tracking (mode 1003), so SwiftTerm's
+    /// default `mouseMoved` sends a motion report on every hover. Claude Code renders
+    /// that stream as a full-screen selection veil that flickers as the pointer moves
+    /// (invisible on the old dark background, glaring on a light one). Clicks
+    /// (mouseDown/Up), drag-selection (mouseDragged) and wheel scrolling are unaffected;
+    /// Cmd+hover URL detection runs off our own event monitor, so nothing is lost.
+    override func mouseMoved(with event: NSEvent) {
+        // Intentionally do not forward hover motion to the terminal.
+    }
+
     // MARK: - Cmd+hover URL detection
 
     private static let urlRegex: NSRegularExpression? = {
@@ -446,9 +460,12 @@ final class TerminalCache {
     private var scrollWheelMonitor: Any?
     private var fontSizeObserver: Any?
 
+    /// The unzoomed default size: kitty's `font_size` if known, else the built-in default.
+    @MainActor static var themeFontSize: CGFloat { TerminalTheme.current.fontSize ?? defaultFontSize }
+
     private var currentFontSize: CGFloat = {
         let stored = UserDefaults.standard.double(forKey: TerminalCache.fontSizeKey)
-        return stored > 0 ? CGFloat(stored) : TerminalCache.defaultFontSize
+        return stored > 0 ? CGFloat(stored) : TerminalCache.themeFontSize
     }()
 
     /// Find the active (visible) session name for the terminal under the given window point.
@@ -472,6 +489,94 @@ final class TerminalCache {
             }
         }
         return nil
+    }
+
+    /// Translate a window point into 1-based terminal cell coordinates (col, row)
+    /// for the given session, so a forwarded mouse event lands under the cursor.
+    /// SwiftTerm's view is not flipped (origin bottom-left) — row is measured from
+    /// the top. Values are clamped inside the grid; returns nil if geometry is unusable.
+    func terminalCell(at windowPoint: NSPoint, in window: NSWindow, session: String) -> (col: Int, row: Int)? {
+        guard let terminal = terminals[session] else { return nil }
+        let term = terminal.getTerminal()
+        let cols = term.cols, rows = term.rows
+        let bounds = terminal.bounds
+        guard cols > 0, rows > 0, bounds.width > 0, bounds.height > 0 else { return nil }
+
+        let local = terminal.convert(windowPoint, from: nil)
+        let cellW = bounds.width / CGFloat(cols)
+        let cellH = bounds.height / CGFloat(rows)
+        let yFromTop = terminal.isFlipped ? local.y : (bounds.height - local.y)
+
+        let col = min(max(Int(local.x / cellW) + 1, 1), cols)
+        let row = min(max(Int(yFromTop / cellH) + 1, 1), rows)
+        return (col, row)
+    }
+
+    /// Whether the app in the pane owns the mouse on the alternate screen — i.e. it
+    /// renders full-screen (Claude Code, vim, less, …) and has requested mouse
+    /// reporting. Such apps manage their own scrollback, so the wheel must be handed
+    /// to them rather than driving tmux copy-mode.
+    static func appHandlesMouse(session: String, tmux: String) async -> Bool {
+        guard let out = try? await ShellCommand.run(
+            tmux,
+            arguments: ["display-message", "-p", "-t", session,
+                        "#{alternate_on},#{mouse_all_flag},#{mouse_any_flag}"]
+        ) else { return false }
+        let parts = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ",")
+        guard parts.count == 3 else { return false }
+        // Alternate screen active AND some mouse-reporting mode on.
+        return parts[0] == "1" && (parts[1] == "1" || parts[2] == "1")
+    }
+
+    /// Forward `lines` mouse-wheel events to the app in the pane as SGR mouse
+    /// sequences (button 64 = wheel up, 65 = wheel down; press-only). Bytes are sent
+    /// via `send-keys -H` so tmux delivers them straight to the app's stdin.
+    static func forwardWheel(up: Bool, lines: Int, col: Int, row: Int, session: String, tmux: String) async {
+        let button = up ? 64 : 65
+        let seq = "\u{1b}[<\(button);\(col);\(row)M"          // ESC [ < btn ; col ; row M
+        let oneEvent = Array(seq.utf8).map { String(format: "%02x", $0) }
+        let hexBytes = (0..<max(1, lines)).flatMap { _ in oneEvent }
+        _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "-H"] + hexBytes)
+    }
+
+    /// `appHandlesMouse` with a short-lived per-session cache. Without it, every
+    /// wheel tick spawned a `tmux display-message` subprocess before scrolling —
+    /// that per-event round-trip made scrolling laggy and choppy.
+    private static let altScreenTTL: Duration = .milliseconds(250)
+    private var altScreenCache: [String: (value: Bool, at: ContinuousClock.Instant)] = [:]
+
+    func appHandlesMouseCached(session: String, tmux: String) async -> Bool {
+        if let entry = altScreenCache[session], entry.at.duration(to: .now) < Self.altScreenTTL {
+            return entry.value
+        }
+        let value = await Self.appHandlesMouse(session: session, tmux: tmux)
+        altScreenCache[session] = (value, .now)
+        return value
+    }
+
+    /// Keep the batched view in passthrough (no frame-dropping) while the wheel is
+    /// moving, so each repaint from the app / copy-mode renders intact. Dropping
+    /// bytes mid-repaint (the normal perf path) tore and mixed the screen during a
+    /// scroll. Reverts `lingerAfterScroll` after the last event, unless copy-mode is
+    /// still active — that path owns its own passthrough lifecycle.
+    private static let lingerAfterScroll: Duration = .milliseconds(300)
+    private var scrollPassthroughResetTasks: [String: Task<Void, Never>] = [:]
+
+    /// Max lines scrolled per wheel event — clamps trackpad momentum spikes so
+    /// scrolling stays steady instead of accelerating.
+    private static let maxLinesPerScroll = 3
+
+    func noteScrollActivity(session: String) {
+        terminals[session]?.passthroughMode = true
+        scrollPassthroughResetTasks[session]?.cancel()
+        scrollPassthroughResetTasks[session] = Task { [weak self] in
+            try? await Task.sleep(for: Self.lingerAfterScroll)
+            guard let self, !Task.isCancelled else { return }
+            if !self.copyModeSessions.contains(session) {
+                self.terminals[session]?.passthroughMode = false
+            }
+            self.scrollPassthroughResetTasks[session] = nil
+        }
     }
 
     /// Tracks tmux copy-mode state per session for scroll interception.
@@ -553,37 +658,53 @@ final class TerminalCache {
                 return nil // consume during cooldown
             }
 
-            if event.deltaY > 0 {
-                // Scroll UP — enter copy-mode if needed, then scroll.
-                // All scroll commands use -X (copy-mode commands) so they're
-                // no-ops if copy-mode has already been exited by another task.
-                let lines = max(1, Int(abs(event.deltaY)))
-                if !inCopyMode {
-                    self?.copyModeSessions.insert(session)
-                    self?.terminals[session]?.passthroughMode = true
-                    Task.detached {
-                        _ = try? await ShellCommand.run(tmux, arguments: ["copy-mode", "-t", session])
-                        _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "-X", "-N", "\(lines)", "cursor-up"])
-                    }
-                } else {
-                    Task.detached {
-                        _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "-X", "-N", "\(lines)", "cursor-up"])
-                    }
+            let up = event.deltaY > 0
+            // Cap lines per event: trackpad momentum yields huge deltaY spikes that
+            // otherwise scroll many lines at once, which feels like runaway acceleration.
+            let lines = min(max(1, Int(abs(event.deltaY))), Self.maxLinesPerScroll)
+            // Pointer position in terminal cells (1-based) — used to forward a real
+            // mouse-wheel event to a full-screen app at the location under the cursor.
+            let cell = self?.terminalCell(at: event.locationInWindow, in: window, session: session) ?? (col: 1, row: 1)
+
+            // Render every repaint intact while the wheel is moving — no frame-dropping,
+            // which otherwise tears and mixes the screen mid-scroll.
+            self?.noteScrollActivity(session: session)
+
+            Task.detached {
+                // Full-screen apps with mouse reporting on (Claude Code, vim, less, …)
+                // render on the ALTERNATE screen and own their own scrollback: tmux
+                // copy-mode has nothing to show there (history_size == 0). Forward the
+                // wheel to the app as an SGR mouse event so IT scrolls, and skip
+                // copy-mode entirely for these panes.
+                if await TerminalCache.shared.appHandlesMouseCached(session: session, tmux: tmux) {
+                    await TerminalCache.forwardWheel(up: up, lines: lines, col: cell.col, row: cell.row,
+                                                     session: session, tmux: tmux)
+                    return
                 }
-            } else if inCopyMode {
-                // Scroll DOWN in copy-mode.
-                // -X cursor-down is a copy-mode command: no-op if copy-mode already exited.
-                // No literal keys ever reach the shell, regardless of concurrent task timing.
-                let lines = max(1, Int(abs(event.deltaY)))
-                Task.detached {
-                    _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "-X", "-N", "\(lines)", "cursor-down"])
+
+                // Otherwise (primary screen, e.g. a shell): drive tmux copy-mode over
+                // the pane's real scrollback. All scroll commands use -X so they're
+                // no-ops if copy-mode was exited concurrently by another task.
+                if up {
+                    let entering = await MainActor.run { () -> Bool in
+                        guard !TerminalCache.shared.copyModeSessions.contains(session) else { return false }
+                        TerminalCache.shared.copyModeSessions.insert(session)
+                        TerminalCache.shared.terminals[session]?.passthroughMode = true
+                        return true
+                    }
+                    if entering {
+                        _ = try? await ShellCommand.run(tmux, arguments: ["copy-mode", "-t", session])
+                    }
+                    _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "-X", "-N", "\(lines)", "scroll-up"])
+                } else if inCopyMode {
+                    _ = try? await ShellCommand.run(tmux, arguments: ["send-keys", "-t", session, "-X", "-N", "\(lines)", "scroll-down"])
                     try? await Task.sleep(for: .milliseconds(50))
                     let result = try? await ShellCommand.run(
                         tmux, arguments: ["display-message", "-p", "-t", session, "#{scroll_position}"]
                     )
                     if result?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "0" {
                         // Only the first task to reach here proceeds (remove returns nil for duplicates).
-                        let shouldExit = await MainActor.run {
+                        let shouldExit = await MainActor.run { () -> Bool in
                             guard TerminalCache.shared.copyModeSessions.remove(session) != nil else { return false }
                             TerminalCache.shared.copyModeExitTime[session] = .now
                             TerminalCache.shared.terminals[session]?.passthroughMode = false
@@ -613,10 +734,10 @@ final class TerminalCache {
 
     private func applyFontSizeIfChanged() {
         let stored = UserDefaults.standard.double(forKey: Self.fontSizeKey)
-        let newSize = stored > 0 ? CGFloat(stored) : Self.defaultFontSize
+        let newSize = stored > 0 ? CGFloat(stored) : Self.themeFontSize
         guard newSize != currentFontSize else { return }
         currentFontSize = newSize
-        let font = NSFont.monospacedSystemFont(ofSize: newSize, weight: .regular)
+        let font = TerminalTheme.current.resolvedFont(size: newSize)
         for terminal in terminals.values {
             terminal.font = font
         }
@@ -636,35 +757,15 @@ final class TerminalCache {
             return existing
         }
         let terminal = BatchedTerminalView(frame: frame)
-        // Dark terminal colors matching a real terminal
-        terminal.nativeBackgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.07, alpha: 1.0)
-        terminal.nativeForegroundColor = NSColor(red: 0.93, green: 0.93, blue: 0.93, alpha: 1.0)
-        terminal.caretColor = .systemGreen
+        // Terminal colors from the user's real terminal (iTerm2 default profile),
+        // falling back to the built-in palette. See TerminalTheme.
+        let theme = TerminalTheme.current
+        terminal.nativeBackgroundColor = theme.background
+        terminal.nativeForegroundColor = theme.foreground
+        terminal.caretColor = theme.cursor
+        terminal.installColors(theme.ansi)
 
-        // Brighter ANSI palette (SwiftTerm Color uses UInt16 0-65535, multiply 0-255 by 257)
-        let c = { (r: UInt16, g: UInt16, b: UInt16) in SwiftTerm.Color(red: r * 257, green: g * 257, blue: b * 257) }
-        terminal.installColors([
-            // Standard colors (0-7)
-            c(0x33, 0x33, 0x33),  // black (slightly visible)
-            c(0xFF, 0x5F, 0x56),  // red
-            c(0x5A, 0xF7, 0x8E),  // green
-            c(0xFF, 0xD7, 0x5F),  // yellow
-            c(0x57, 0xAC, 0xFF),  // blue
-            c(0xFF, 0x6A, 0xC1),  // magenta
-            c(0x5A, 0xF7, 0xD4),  // cyan
-            c(0xE0, 0xE0, 0xE0),  // white
-            // Bright colors (8-15)
-            c(0x66, 0x66, 0x66),  // bright black
-            c(0xFF, 0x6E, 0x67),  // bright red
-            c(0x5A, 0xF7, 0x8E),  // bright green
-            c(0xFF, 0xFC, 0x67),  // bright yellow
-            c(0x6B, 0xC1, 0xFF),  // bright blue
-            c(0xFF, 0x77, 0xD0),  // bright magenta
-            c(0x5A, 0xF7, 0xD4),  // bright cyan
-            c(0xFF, 0xFF, 0xFF),  // bright white
-        ])
-
-        terminal.font = NSFont.monospacedSystemFont(ofSize: currentFontSize, weight: .regular)
+        terminal.font = TerminalTheme.current.resolvedFont(size: currentFontSize)
 
         // Do NOT set autoresizingMask — we manage frame explicitly in layout()
         // to avoid intermediate sizes triggering tmux redraws during animations.
@@ -685,10 +786,15 @@ final class TerminalCache {
         let escaped = sessionName.replacingOccurrences(of: "'", with: "'\\''")
         let tmux = Self.tmuxPath
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        // SwiftTerm's default set (TERM, COLORTERM, LANG, …) plus a COLORFGBG hint so
+        // background-aware TUIs (Claude Code, vim, …) render for the terminal's actual
+        // theme instead of assuming dark — matches the applied TerminalTheme.
+        let environment = SwiftTerm.Terminal.getEnvironmentVariables()
+            + ["COLORFGBG=\(TerminalTheme.current.colorFgBg)"]
         terminal.startProcess(
             executable: userShell,
             args: ["-l", "-c", "for i in $(seq 1 50); do '\(tmux)' has-session -t '\(escaped)' 2>/dev/null && break; sleep 0.1; done; exec '\(tmux)' attach-session -t '\(escaped)'"],
-            environment: nil,
+            environment: environment,
             execName: nil,
             currentDirectory: nil
         )
@@ -803,13 +909,13 @@ final class TerminalContainerNSView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.07, alpha: 1.0).cgColor
+        layer?.backgroundColor = TerminalTheme.current.background.cgColor
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.07, alpha: 1.0).cgColor
+        layer?.backgroundColor = TerminalTheme.current.background.cgColor
     }
 
     /// Ensure a terminal for `sessionName` is attached to this container.

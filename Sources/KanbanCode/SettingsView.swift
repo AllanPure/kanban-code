@@ -593,7 +593,7 @@ struct GeneralSettingsView: View {
 
     @AppStorage("preferredEditorBundleId") private var editorBundleId: String = "dev.zed.Zed"
     @AppStorage("uiTextSize") private var uiTextSize: Int = 1
-    @AppStorage("sessionDetailFontSize") private var sessionDetailFontSize: Double = Double(TerminalCache.defaultFontSize)
+    @AppStorage("sessionDetailFontSize") private var sessionDetailFontSize: Double = Double(TerminalCache.themeFontSize)
     @State private var installedEditors: [EditorDiscovery.Editor] = []
     @State private var showOnboarding = false
     @State private var mergeCommand: String = GitHubSettings.defaultMergeCommand

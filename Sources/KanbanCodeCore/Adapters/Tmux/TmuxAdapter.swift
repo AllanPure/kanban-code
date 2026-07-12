@@ -42,7 +42,19 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         // Then send the command via send-keys so the shell stays alive
         // if the command exits — the user can see errors and take charge.
         let args = ["new-session", "-d", "-s", name, "-c", path]
-        let result = try await ShellCommand.run(tmuxPath, arguments: args)
+
+        // Inject the terminal's light/dark hint into the session env (set by the app
+        // as KANBAN_COLORFGBG) so panes and their TUIs render for the right theme.
+        // `-e` needs tmux ≥ 3.2, so if new-session fails with it, retry without —
+        // the env hint is a nicety and must never block a session launch.
+        var envArgs: [String] = []
+        if let fgbg = ProcessInfo.processInfo.environment["KANBAN_COLORFGBG"], !fgbg.isEmpty {
+            envArgs = ["-e", "COLORFGBG=\(fgbg)"]
+        }
+        var result = try await ShellCommand.run(tmuxPath, arguments: args + envArgs)
+        if !result.succeeded, !envArgs.isEmpty {
+            result = try await ShellCommand.run(tmuxPath, arguments: args)
+        }
         if !result.succeeded {
             throw TmuxError.createFailed(name: name, message: result.stderr)
         }

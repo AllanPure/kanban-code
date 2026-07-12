@@ -8,6 +8,10 @@ struct KanbanCodeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        // Bridge the terminal theme's light/dark hint to tmux: TmuxAdapter reads this
+        // env var and injects `-e COLORFGBG=...` on new-session, so panes and the TUIs
+        // inside them (Claude Code, vim, …) render for the right theme.
+        setenv("KANBAN_COLORFGBG", TerminalTheme.current.colorFgBg, 1)
         MainThreadWatchdog.shared.start()
         MemoryDiagnostics.shared.start()
         ChatBootstrap.run()
@@ -65,7 +69,7 @@ struct KanbanCodeApp: App {
 
                 Button("Actual Size") {
                     UserDefaults.standard.set(1, forKey: "uiTextSize")
-                    UserDefaults.standard.set(Double(TerminalCache.defaultFontSize), forKey: TerminalCache.fontSizeKey)
+                    UserDefaults.standard.set(Double(TerminalCache.themeFontSize), forKey: TerminalCache.fontSizeKey)
                 }
                 .keyboardShortcut("0", modifiers: .command)
             }
@@ -77,13 +81,14 @@ struct KanbanCodeApp: App {
     }
 
     /// Adjust both UI text size and session detail font size together.
+    @MainActor
     private static func adjustZoom(by delta: Int) {
         let currentUI = UserDefaults.standard.object(forKey: "uiTextSize") != nil
             ? UserDefaults.standard.integer(forKey: "uiTextSize") : 1
         UserDefaults.standard.set(min(max(currentUI + delta, 0), 4), forKey: "uiTextSize")
 
         let termSize = UserDefaults.standard.double(forKey: TerminalCache.fontSizeKey)
-        let currentTerm = termSize > 0 ? termSize : Double(TerminalCache.defaultFontSize)
+        let currentTerm = termSize > 0 ? termSize : Double(TerminalCache.themeFontSize)
         UserDefaults.standard.set(min(max(currentTerm + Double(delta), 8), 24), forKey: TerminalCache.fontSizeKey)
     }
 
@@ -562,6 +567,7 @@ extension Notification.Name {
     static let kanbanCodeNewTask = Notification.Name("kanbanCodeNewTask")
     static let kanbanCodeToggleSearch = Notification.Name("kanbanCodeToggleSearch")
     static let kanbanCodeHookEvent = Notification.Name("kanbanCodeHookEvent")
+    static let kanbanCodeLinksChanged = Notification.Name("kanbanCodeLinksChanged")
     static let kanbanCodeHistoryChanged = Notification.Name("kanbanCodeHistoryChanged")
     static let kanbanCodeSettingsChanged = Notification.Name("kanbanCodeSettingsChanged")
     static let kanbanCodeSelectCard = Notification.Name("kanbanCodeSelectCard")

@@ -2138,7 +2138,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         return calculateMouseHit(at: point).grid
     }
     
-    public override func mouseMoved(with event: NSEvent) {
+    open override func mouseMoved(with event: NSEvent) {
         let hit = calculateMouseHit(with: event)
         if commandActive {
             if let payload = getPayload(for: event) as? String {
