@@ -882,7 +882,12 @@ struct ContentView: View {
                     .ignoresSafeArea(edges: .top)
                     .inspector(isPresented: showInspector) {
                         inspectorContent
-                            .inspectorColumnWidth(min: 600, ideal: 800, max: 2400)
+                            // Constant identity: without it the inspector treats each card's
+                            // detail view as brand-new content and snaps the column back to
+                            // `ideal` on every card switch. A stable id keeps the column, so a
+                            // width the user dragged persists across selections.
+                            .id("inspector-panel")
+                            .inspectorColumnWidth(min: 600, ideal: 960, max: 2400)
                     }
             }
         }
