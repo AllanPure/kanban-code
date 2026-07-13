@@ -70,12 +70,12 @@ struct CardLifecycleTests {
         #expect(link.column == .done)
     }
 
-    @Test("Actively working overrides manual column to inProgress")
-    func activelyWorkingOverridesManual() {
+    @Test("Manual placement wins over active work — a moved card stays put")
+    func manualPlacementWinsOverActiveWork() {
         var link = Link(column: .done, sessionLink: SessionLink(sessionId: "s1"))
         link.manualOverrides.column = true
         UpdateCardColumn.update(link: &link, activityState: .activelyWorking, hasWorktree: true)
-        #expect(link.column == .inProgress)
+        #expect(link.column == .done)
     }
 
     @Test("Manual override respected when not actively working")

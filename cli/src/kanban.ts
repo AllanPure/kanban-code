@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { Command } from "commander";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import {
   readLinks,
   readSettings,
@@ -309,6 +309,66 @@ taskCmd
     }
   });
 
+taskCmd
+  .command("archive")
+  .description("Archive card(s) — hide from the board and kill their tmux sessions (reversible with `unarchive`). With no id, archives the current session's card.")
+  .argument("[cards...]", "Card id(s); defaults to the current session's card")
+  .option("-j, --json", "Output the archived cards as JSON")
+  .action((cardArgs: string[], opts) => {
+    try {
+      const links = readLinks();
+      const targets: Link[] = cardArgs.length
+        ? cardArgs.map((id) => {
+            const c = links.find((l) => l.id === id);
+            if (!c) throw new Error(`unknown card: ${id}`);
+            return c;
+          })
+        : [resolveTaskCard(links, undefined)];
+      const now = isoNow();
+      for (const card of targets) {
+        card.manuallyArchived = true;
+        card.updatedAt = now;
+        upsertCard(card);
+      }
+      output(
+        opts.json ? targets : `Archived ${targets.length} card(s): ${targets.map((c) => c.name ?? c.id).join(", ")}`,
+        opts,
+      );
+    } catch (e) {
+      process.stderr.write(`Error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+taskCmd
+  .command("unarchive")
+  .description("Un-archive card(s) — bring them back onto the board.")
+  .argument("<cards...>", "Card id(s) to restore")
+  .option("-j, --json", "Output the restored cards as JSON")
+  .action((cardArgs: string[], opts) => {
+    try {
+      const links = readLinks();
+      const targets = cardArgs.map((id) => {
+        const c = links.find((l) => l.id === id);
+        if (!c) throw new Error(`unknown card: ${id}`);
+        return c;
+      });
+      const now = isoNow();
+      for (const card of targets) {
+        card.manuallyArchived = false;
+        card.updatedAt = now;
+        upsertCard(card);
+      }
+      output(
+        opts.json ? targets : `Un-archived ${targets.length} card(s): ${targets.map((c) => c.name ?? c.id).join(", ")}`,
+        opts,
+      );
+    } catch (e) {
+      process.stderr.write(`Error: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
 /// Resolve the target card: an explicit id, else the card of the current tmux session.
 function resolveTaskCard(links: Link[], cardId?: string): Link {
   if (cardId) {
@@ -321,6 +381,163 @@ function resolveTaskCard(links: Link[], cardId?: string): Link {
   if (!c) throw new Error("could not infer the current card (not inside a card's tmux session) — pass --card");
   return c;
 }
+
+// ── kanban activity ──────────────────────────────────────────────────
+//
+// Cross-project commit list for the orchestrator's recaps / timesheets.
+
+program
+  .command("activity")
+  .description("List my commits across configured projects (recaps / timesheets)")
+  .option("--days <n>", "How many days back", "7")
+  .option("-j, --json", "Output as JSON")
+  .action((opts) => {
+    const projects = ((readSettings() as { projects?: Array<{ path: string; name: string; repoRoot?: string }> }).projects) ?? [];
+    const since = `${Number(opts.days) || 7} days ago`;
+    const commits: Array<{ time: string; project: string; subject: string }> = [];
+    for (const p of projects) {
+      const repo = p.repoRoot || p.path;
+      try {
+        const out = execFileSync(
+          "git",
+          ["-C", repo, "log", "--all", "--no-merges", `--since=${since}`, "--pretty=%aI%s"],
+          { encoding: "utf-8" }
+        );
+        for (const line of out.split("\n")) {
+          const idx = line.indexOf("");
+          if (idx > 0) commits.push({ time: line.slice(0, idx), project: p.name, subject: line.slice(idx + 1) });
+        }
+      } catch {
+        // not a git repo / git error — skip
+      }
+    }
+    commits.sort((a, b) => (a.time < b.time ? 1 : -1));
+    if (opts.json) return output(commits, opts);
+    output(
+      commits.map((c) => `${c.time.slice(0, 16).replace("T", " ")}  ${c.project}  ${c.subject}`).join("\n") || "(no commits)",
+      opts
+    );
+  });
+
+// ── kanban todo ──────────────────────────────────────────────────────
+//
+// A personal todo list shared with the app's orchestrator panel (todos.json). The
+// orchestrator drives it as it plans/works; the user also edits it in the panel.
+
+interface CliTodo {
+  id: string;
+  text: string;
+  done: boolean;
+  createdAt: string;
+  project?: string;
+  odooTaskId?: number;
+  publish?: boolean;
+}
+
+function todosPath(): string {
+  return join(homedir(), ".kanban-code", "todos.json");
+}
+function readTodos(): CliTodo[] {
+  try {
+    const t = JSON.parse(readFileSync(todosPath(), "utf8"));
+    return Array.isArray(t) ? t : [];
+  } catch {
+    return [];
+  }
+}
+function writeTodos(todos: CliTodo[]): void {
+  const p = todosPath();
+  mkdirSync(dirname(p), { recursive: true });
+  writeFileSync(p, JSON.stringify(todos, null, 2));
+}
+
+const todoCmd = program.command("todo").description("Personal todos, shared with the app's orchestrator panel");
+
+todoCmd
+  .command("add")
+  .description("Add a todo.")
+  .argument("<text...>", "Todo text")
+  .option("--project <name>", "Associate with a project")
+  .option("--odoo <taskId>", "Link an Odoo project.task id")
+  .option("--publish", "Mark it to be synced/published to Odoo")
+  .option("-j, --json", "Output the new todo as JSON")
+  .action((text: string[], opts) => {
+    const todos = readTodos();
+    const todo: CliTodo = {
+      id: generateKsuid("todo"),
+      text: text.join(" ").trim(),
+      done: false,
+      createdAt: isoNow(),
+      project: opts.project,
+      odooTaskId: opts.odoo ? Number(opts.odoo) : undefined,
+      publish: opts.publish ? true : undefined,
+    };
+    todos.push(todo);
+    writeTodos(todos);
+    output(opts.json ? todo : `Added todo ${todo.id}: ${todo.text}`, opts);
+  });
+
+todoCmd
+  .command("set")
+  .description("Update a todo — text, project, Odoo link, or publish flag.")
+  .argument("<id>", "Todo id")
+  .option("--text <text>", "New text")
+  .option("--project <name>", "Set the project")
+  .option("--odoo <taskId>", "Link an Odoo project.task id")
+  .option("--publish", "Mark to sync to Odoo")
+  .option("--no-publish", "Unmark publish")
+  .option("-j, --json", "Output the updated todo as JSON")
+  .action((id: string, opts) => {
+    const todos = readTodos();
+    const todo = todos.find((t) => t.id === id);
+    if (!todo) { process.stderr.write(`Error: unknown todo: ${id}\n`); process.exit(1); }
+    if (opts.text != null) todo.text = opts.text;
+    if (opts.project != null) todo.project = opts.project;
+    if (opts.odoo != null) todo.odooTaskId = Number(opts.odoo);
+    if (opts.publish != null) todo.publish = opts.publish; // commander sets false with --no-publish
+    writeTodos(todos);
+    output(opts.json ? todo : `Updated todo ${id}`, opts);
+  });
+
+todoCmd
+  .command("list")
+  .description("List todos (open first).")
+  .option("--all", "Include done todos")
+  .option("-j, --json", "Output as JSON")
+  .action((opts) => {
+    let todos = readTodos();
+    if (!opts.all) todos = todos.filter((t) => !t.done);
+    todos.sort((a, b) => (a.done === b.done ? a.createdAt.localeCompare(b.createdAt) : a.done ? 1 : -1));
+    if (opts.json) return output(todos, opts);
+    if (!todos.length) return output("(no todos)", opts);
+    output(todos.map((t) => `${t.done ? "[x]" : "[ ]"} ${t.id}  ${t.text}${t.project ? "  ·" + t.project : ""}`).join("\n"), opts);
+  });
+
+todoCmd
+  .command("done")
+  .description("Mark a todo done (or --undo).")
+  .argument("<id>", "Todo id")
+  .option("--undo", "Mark it not done instead")
+  .action((id: string, opts) => {
+    const todos = readTodos();
+    const todo = todos.find((t) => t.id === id);
+    if (!todo) { process.stderr.write(`Error: unknown todo: ${id}\n`); process.exit(1); }
+    todo.done = !opts.undo;
+    writeTodos(todos);
+    output(`${todo.done ? "Done" : "Reopened"}: ${todo.text}`, opts);
+  });
+
+todoCmd
+  .command("rm")
+  .description("Remove a todo.")
+  .argument("<id>", "Todo id")
+  .action((id: string, opts) => {
+    const todos = readTodos();
+    const next = todos.filter((t) => t.id !== id);
+    if (next.length === todos.length) { process.stderr.write(`Error: unknown todo: ${id}\n`); process.exit(1); }
+    writeTodos(next);
+    output(`Removed ${id}`, opts);
+  });
 
 /// Commander collects `--depends-on a b c` into an array; normalize empties to undefined.
 function normalizeDeps(raw: unknown): string[] | undefined {

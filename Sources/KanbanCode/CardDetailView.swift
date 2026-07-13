@@ -236,6 +236,8 @@ struct CardDetailView: View {
 
             // Content
             switch selectedTab {
+            case .diff:
+                WorktreeDiffView(worktreePath: card.link.worktreeLink?.path ?? "")
             case .terminal:
                 terminalView
             case .history:
@@ -1415,6 +1417,11 @@ struct CardDetailView: View {
     private func defaultTab(for card: KanbanCodeCard) -> DetailTab {
         DetailTab.initialTab(for: card)
     }
+
+    /// The Diff tab shows the worktree's changes — only meaningful when the card has one.
+    private var hasWorktreeForDiff: Bool {
+        !(card.link.worktreeLink?.path ?? "").isEmpty
+    }
     // MARK: - Normal Header (collapsed inspector)
 
     @ViewBuilder
@@ -1557,6 +1564,7 @@ struct CardDetailView: View {
             Picker("", selection: $selectedTab) {
                 Text("Terminal").tag(DetailTab.terminal)
                 Text("History").tag(DetailTab.history)
+                if hasWorktreeForDiff { Text("Diff").tag(DetailTab.diff) }
                 if card.link.issueLink != nil { Text("Issue").tag(DetailTab.issue) }
                 if !card.link.prLinks.isEmpty { Text("Pull Request").tag(DetailTab.pullRequest) }
                 if card.link.promptBody != nil && card.link.issueLink == nil { Text("Prompt").tag(DetailTab.prompt) }

@@ -79,14 +79,15 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
 
             let timeSinceModified = Date.now.timeIntervalSince(mtime)
 
-            // Polling NEVER returns .activelyWorking — only hooks can confirm active work.
-            // This prevents false "In Progress" cards for sessions started externally.
-            if timeSinceModified < activeTimeout {
-                // Modified within timeout window — session might be active but unconfirmed by hooks
+            // Polling NEVER returns .activelyWorking OR .needsAttention — only hooks can
+            // confirm active work or that Claude is genuinely waiting on the user. A quiet
+            // transcript only tells us the session is idle, not that it "needs you"; guessing
+            // needsAttention from mtime produced random "needs you" chips (especially for
+            // sessions started outside the app, which have no hooks at all).
+            if timeSinceModified < 3600 {
+                // Idle up to an hour — waiting, but we can't claim it "needs you" (only a
+                // hook can). Previously 5min-1hr mapped to needsAttention → random chips.
                 states[sessionId] = .idleWaiting
-            } else if timeSinceModified < 3600 {
-                // No activity for 5min-1hr — likely needs attention
-                states[sessionId] = .needsAttention
             } else if timeSinceModified < 86400 {
                 states[sessionId] = .ended
             } else {

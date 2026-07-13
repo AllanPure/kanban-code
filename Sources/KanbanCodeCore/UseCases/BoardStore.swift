@@ -787,6 +787,7 @@ public enum Reducer {
             // dependents). Everything else stays in-memory source-of-truth, so the
             // app's own writes round-trip through the watcher as a true no-op.
             var changed = false
+            var effects: [Effect] = []
             for link in links {
                 if state.links[link.id] == nil {
                     if !state.deletedCardIds.contains(link.id) {
@@ -804,10 +805,35 @@ public enum Reducer {
                         state.links[link.id]?.labels = link.labels
                         changed = true
                     }
+                    // Adopt archive state set out-of-process (`kanban task archive` /
+                    // `unarchive`), mirroring the in-app .archiveCard effects: move to
+                    // allSessions, drop pins, and kill the card's tmux session.
+                    if var current = state.links[link.id], link.manuallyArchived != current.manuallyArchived {
+                        if link.manuallyArchived {
+                            current.manuallyArchived = true
+                            current.column = .allSessions
+                            current.pinnedAt = nil
+                            current.pinnedSortOrder = nil
+                            if let tmux = current.tmuxLink {
+                                effects.append(.killTmuxSessions(tmux.allSessionNames))
+                                effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
+                                current.tmuxLink = nil
+                            }
+                            if current.browserTabs != nil {
+                                effects.append(.cleanupBrowserCache(cardId: current.id))
+                                current.browserTabs = nil
+                            }
+                        } else {
+                            current.manuallyArchived = false
+                        }
+                        current.updatedAt = .now
+                        state.links[link.id] = current
+                        changed = true
+                    }
                 }
             }
             if changed { state.rebuildCards() }
-            return []
+            return effects
 
         case .cmdClickCard(let cardId):
             guard state.links[cardId] != nil else { return [] }
@@ -1945,10 +1971,13 @@ public enum Reducer {
                 guard !reconciledIds.contains(id),
                       link.sessionLink == nil,
                       link.source != .manual,
-                      link.name == nil,
+                      link.name?.isEmpty ?? true,   // treat empty name like nil (orphan cards carry "")
                       link.worktreeLink != nil
                 else { continue }
                 mergedLinks.removeValue(forKey: id)
+                // Tombstone it, otherwise the links.json file-watcher (add-only) re-adds it
+                // from disk on the next tick and we absorb+drop the SAME orphan forever.
+                state.deletedCardIds.insert(id)
                 KanbanCodeLog.info("store", "Dropped reconciler-removed orphan \(id.prefix(12))")
             }
 
@@ -1969,11 +1998,12 @@ public enum Reducer {
                 // Split into "real" cards (have a session or were manually created) vs orphans
                 let realIds = ids.filter { id in
                     let l = mergedLinks[id]!
-                    return l.sessionLink != nil || l.source == .manual || l.name != nil
+                    return l.sessionLink != nil || l.source == .manual || !(l.name?.isEmpty ?? true)
                 }
                 let orphanIds = ids.filter { id in
                     let l = mergedLinks[id]!
-                    return l.sessionLink == nil && l.source != .manual && l.name == nil
+                    // Empty name counts as "no name" — discovered orphans carry "".
+                    return l.sessionLink == nil && l.source != .manual && (l.name?.isEmpty ?? true)
                 }
                 guard !orphanIds.isEmpty else { continue } // all legitimate — no dedup needed
 
@@ -1989,6 +2019,7 @@ public enum Reducer {
                         KanbanCodeLog.info("store", "Dedup: absorbing orphan \(orphanId.prefix(12)) (branch=\(branch)) into \(keeperId.prefix(12))")
                     }
                     mergedLinks.removeValue(forKey: orphanId)
+                    state.deletedCardIds.insert(orphanId) // tombstone so the file-watcher can't resurrect it
                 }
                 mergedLinks[keeperId] = keeper
             }
@@ -2008,15 +2039,16 @@ public enum Reducer {
                 } ?? false
                 let hasWorktree = link.worktreeLink?.branch != nil
 
-                // Clear manual column override when we have definitive data.
-                // Backlog is sticky — the user explicitly parked this card.
-                if link.manualOverrides.column && link.column != .backlog {
-                    if activity != nil && activity != .stale {
-                        link.manualOverrides.column = false
-                    } else if link.tmuxLink != nil && !hasTmux {
-                        link.tmuxLink = nil
-                        link.manualOverrides.column = false
-                    }
+                // A manual placement is DURABLE — the user chose this column, so we keep
+                // it even when live activity arrives (previously activity cleared the
+                // override and yanked the card back, so a manual move never stuck without
+                // archiving). Only relaunch/resume (which clear the override) hand control
+                // back to auto-assignment. We still drop the override when the card's tmux
+                // session has died, so a finished card can flow on normally.
+                if link.manualOverrides.column && link.column != .backlog,
+                   link.tmuxLink != nil, !hasTmux {
+                    link.tmuxLink = nil
+                    link.manualOverrides.column = false
                 }
 
                 UpdateCardColumn.update(

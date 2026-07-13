@@ -284,7 +284,11 @@ public enum CardReconciler {
         for (branch, cardIds) in cardIdsByBranch where cardIds.count > 1 {
             let orphanIds = cardIds.filter { id in
                 let l = linksById[id]!
-                return l.sessionLink == nil && l.source != .manual && l.name == nil
+                // A bare worktree-only card: no session, not user-created, and no real name.
+                // Treat an EMPTY name the same as nil — discovered orphan cards can carry an
+                // empty-string name, which previously slipped past `== nil` and lingered as a
+                // duplicate next to the real card that owns the same worktree.
+                return l.sessionLink == nil && l.source != .manual && (l.name?.isEmpty ?? true)
             }
             guard !orphanIds.isEmpty else { continue }
 

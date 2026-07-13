@@ -29,6 +29,11 @@ struct KanbanCodeApp: App {
                     NotificationCenter.default.post(name: .kanbanCodeNewTask, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
+
+                Button("Open Orchestrator") {
+                    NotificationCenter.default.post(name: .kanbanCodeOpenOrchestrator, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
             }
 
             CommandGroup(replacing: .undoRedo) {
@@ -565,6 +570,7 @@ enum AppearanceMode: String, CaseIterable {
 
 extension Notification.Name {
     static let kanbanCodeNewTask = Notification.Name("kanbanCodeNewTask")
+    static let kanbanCodeOpenOrchestrator = Notification.Name("kanbanCodeOpenOrchestrator")
     static let kanbanCodeToggleSearch = Notification.Name("kanbanCodeToggleSearch")
     static let kanbanCodeHookEvent = Notification.Name("kanbanCodeHookEvent")
     static let kanbanCodeLinksChanged = Notification.Name("kanbanCodeLinksChanged")

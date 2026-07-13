@@ -130,6 +130,41 @@ struct CardReconcilerTests {
         #expect(result[0].worktreeLink?.branch == "fix-auth")
     }
 
+    @Test("Orphan worktree card with EMPTY name is absorbed into the real card on the same branch")
+    func emptyNameOrphanAbsorbed() {
+        let branch = "worktree-drifting-bouncing-ladybug"
+        let path = "/project/.claude/worktrees/drifting-bouncing-ladybug"
+        // The real task card (Fix 1 attached the worktree to it at launch).
+        let taskCard = Link(
+            name: "Lis la revue de code",
+            projectPath: "/project",
+            column: .inProgress,
+            source: .manual,
+            tmuxLink: TmuxLink(sessionName: "project-task"),
+            worktreeLink: WorktreeLink(path: path, branch: branch)
+        )
+        // The lingering orphan the reconciler made during the launch window — no session,
+        // discovered, and an EMPTY (not nil) name, which used to slip past dedup.
+        let orphan = Link(
+            name: "",
+            projectPath: "/project",
+            column: .waiting,
+            source: .discovered,
+            worktreeLink: WorktreeLink(path: path, branch: branch)
+        )
+
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            worktrees: ["/project": [Worktree(path: path, branch: branch)]]
+        )
+        let result = CardReconciler.reconcile(existing: [taskCard, orphan], snapshot: snapshot)
+
+        // The orphan must be absorbed — exactly one card owns the worktree.
+        let owners = result.filter { $0.worktreeLink?.branch == branch }
+        #expect(owners.count == 1)
+        #expect(owners.first?.id == taskCard.id)
+        #expect(!result.contains { $0.id == orphan.id })
+    }
+
     @Test("GitHub issue + start work = 1 card (issue gains sessionLink)")
     func issueGainsSession() {
         let issueCard = Link(

@@ -14,3 +14,6 @@ web/dist/
 # Ralph-loop local iteration log (not part of the feature)
 .claude/ralph-loop.local.md
 web/tsconfig.tsbuildinfo
+
+# Local git worktrees created by the app
+.claude/worktrees/

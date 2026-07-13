@@ -42,6 +42,39 @@ struct ReducerTests {
         return state
     }
 
+    // MARK: - External archive adoption (kanban task archive)
+
+    @Test("externalCardsAppeared adopts manuallyArchived from disk, kills tmux, moves to allSessions")
+    func externalArchiveAdopted() {
+        let live = makeLink(id: "card_arch1", column: .inProgress,
+                            tmuxLink: TmuxLink(sessionName: "callvin-card_arch1"))
+        var state = stateWith([live])
+
+        // Disk copy flipped to archived (as `kanban task archive` would write it).
+        var diskCopy = live
+        diskCopy.manuallyArchived = true
+
+        let effects = Reducer.reduce(state: &state, action: .externalCardsAppeared([diskCopy]))
+
+        #expect(state.links["card_arch1"]?.manuallyArchived == true)
+        #expect(state.links["card_arch1"]?.column == .allSessions)
+        #expect(state.links["card_arch1"]?.tmuxLink == nil)   // session cleared
+        #expect(effects.contains { if case .killTmuxSessions = $0 { return true } else { return false } })
+    }
+
+    @Test("externalCardsAppeared adopts unarchive from disk")
+    func externalUnarchiveAdopted() {
+        var archived = makeLink(id: "card_arch2", column: .allSessions)
+        archived.manuallyArchived = true
+        var state = stateWith([archived])
+
+        var diskCopy = archived
+        diskCopy.manuallyArchived = false
+
+        _ = Reducer.reduce(state: &state, action: .externalCardsAppeared([diskCopy]))
+        #expect(state.links["card_arch2"]?.manuallyArchived == false)
+    }
+
     // MARK: - Create Manual Task
 
     @Test("createManualTask adds link to state")

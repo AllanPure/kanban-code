@@ -5,12 +5,14 @@ import Foundation
 @Suite("AssignColumn")
 struct AssignColumnTests {
 
-    @Test("Actively working overrides manual column")
-    func activelyWorkingOverridesManual() {
+    @Test("Manual placement wins over active work (move sticks without archiving)")
+    func manualPlacementWinsOverActiveWork() {
+        // The user dragged a live card to Done — it must stay Done even while the session
+        // is actively working, instead of being yanked back to In Progress.
         var link = Link(column: .done, sessionLink: SessionLink(sessionId: "s1"))
         link.manualOverrides.column = true
         let col = AssignColumn.assign(link: link, activityState: .activelyWorking)
-        #expect(col == .inProgress)
+        #expect(col == .done)
     }
 
     @Test("Manual column override respected when not actively working")
@@ -152,6 +154,31 @@ struct AssignColumnTests {
         let link = Link(source: .manual)
         let col = AssignColumn.assign(link: link)
         #expect(col == .backlog)
+    }
+
+    @Test("Parked backlog card WITHOUT live work stays backlog")
+    func parkedBacklogStaysWithoutLiveWork() {
+        var link = Link(column: .backlog, source: .manual)
+        link.manualOverrides.column = true
+        let col = AssignColumn.assign(link: link, activityState: .idleWaiting, hasWorktree: false)
+        #expect(col == .backlog)
+    }
+
+    @Test("Parked backlog card WITH a live session is not trapped in backlog")
+    func parkedBacklogPromotedWithLiveWork() {
+        var link = Link(column: .backlog, source: .manual, sessionLink: SessionLink(sessionId: "s1"))
+        link.manualOverrides.column = true
+        // hasWorktree carries live-tmux at the call site — a running agent must escape backlog.
+        let col = AssignColumn.assign(link: link, activityState: nil, hasWorktree: true)
+        #expect(col != .backlog)
+    }
+
+    @Test("Parked backlog card that is actively working → inProgress")
+    func parkedBacklogActivelyWorking() {
+        var link = Link(column: .backlog, source: .manual, sessionLink: SessionLink(sessionId: "s1"))
+        link.manualOverrides.column = true
+        let col = AssignColumn.assign(link: link, activityState: .activelyWorking)
+        #expect(col == .inProgress)
     }
 
     @Test("Manual task with tmuxLink but no session → inProgress (launching)")

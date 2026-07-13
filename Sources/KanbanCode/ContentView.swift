@@ -4,6 +4,17 @@ import Combine
 import KanbanCodeCore
 
 /// Bundles all parameters for the launch confirmation dialog.
+/// Tabs of the full-screen Orchestrator view.
+enum OrchestratorTab: String, CaseIterable, Identifiable {
+    case chat = "Chat"
+    case calendar = "Calendar"
+    case activity = "Activity"
+    case prs = "PRs"
+    case todos = "Todos"
+    case mail = "Mail"
+    var id: String { rawValue }
+}
+
 /// Used with `.sheet(item:)` to guarantee all values are captured atomically.
 struct LaunchConfig: Identifiable {
     let id = UUID()
@@ -108,6 +119,11 @@ struct ContentView: View {
     @State var pendingTerminalSession: String?
     @State var showAddLinkCardId: String?
     @State var launchConfig: LaunchConfig?
+    /// The dedicated "Orchestrator" (Jarvis) view — a full panel hosting the
+    /// orchestrator agent's chat plus info panels, separate from the board.
+    @State var showOrchestratorView = false
+    @State var orchestratorCardId: String?
+    @State var orchestratorTab: OrchestratorTab = .chat
     /// Cards the auto-scheduler has already kicked off, to avoid double-launching
     /// during the async window before `.launchCard` flips the card out of Backlog.
     @State var autoLaunchedCardIds: Set<String> = []
@@ -530,6 +546,11 @@ struct ContentView: View {
                         }
                         .help("New task (⌘N)")
 
+                        Button { openOrchestrator() } label: {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                        }
+                        .help("Open the orchestrator (⌘⇧O)")
+
                         Button { showCreateChannel = true } label: {
                             Image(systemName: "number")
                         }
@@ -551,6 +572,76 @@ struct ContentView: View {
                     }
                 }
             }
+    }
+
+    /// The dedicated "Orchestrator" (Jarvis) view: full-screen tabs for the agent chat,
+    /// a day calendar (commits placed in time), and todos.
+    @ViewBuilder
+    var orchestratorView: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .foregroundStyle(Color.accentColor)
+                Text("Orchestrator").font(.app(.title3, weight: .semibold))
+                Spacer()
+                Picker("", selection: $orchestratorTab) {
+                    ForEach(OrchestratorTab.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 520)
+                Spacer()
+                Button { showOrchestratorView = false } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.app(.title2)).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 12)
+            Divider()
+            orchestratorTabContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.background)
+    }
+
+    /// The project the current orchestrator session is scoped to (for tagging new todos).
+    private var orchestratorProjectName: String? {
+        guard let id = orchestratorCardId,
+              let card = store.state.cards.first(where: { $0.id == id }),
+              let path = card.link.projectPath else { return nil }
+        return store.state.configuredProjects.first(where: { $0.path == path })?.name
+            ?? (path as NSString).lastPathComponent
+    }
+
+    @ViewBuilder
+    private var orchestratorTabContent: some View {
+        switch orchestratorTab {
+        case .chat:
+            if let cardId = orchestratorCardId,
+               let card = store.state.cards.first(where: { $0.id == cardId }) {
+                OrchestratorChatView(card: card)
+            } else {
+                VStack(spacing: 12) {
+                    ProgressView().controlSize(.large)
+                    Text("Starting the orchestrator…").foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        case .calendar:
+            OrchestratorCalendarView(projects: store.state.configuredProjects)
+        case .activity:
+            OrchestratorActivityPanel(projects: store.state.configuredProjects)
+        case .prs:
+            OrchestratorPRsPanel(cards: store.state.cards)
+        case .todos:
+            OrchestratorTodosPanel(defaultProject: orchestratorProjectName)
+                .frame(maxWidth: 640, maxHeight: .infinity, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(20)
+        case .mail:
+            OrchestratorMailPanel()
+        }
     }
 
     /// Shared factory for CardDetailView — used by both the inspector and expanded mode.
@@ -822,8 +913,10 @@ struct ContentView: View {
             }
             .onChange(of: showBoardInExpanded) {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    sidebarVisibility = (isExpandedDetail && showBoardInExpanded)
-                        ? .doubleColumn : .detailOnly
+                    // Was gated on `isExpandedDetail`, which force-reverted the native
+                    // sidebar toggle in Kanban mode (the sidebar could only open in the
+                    // expanded/list view). Let the toggle work in both modes.
+                    sidebarVisibility = showBoardInExpanded ? .doubleColumn : .detailOnly
                 }
             }
             .onChange(of: sidebarVisibility) {
@@ -1198,7 +1291,7 @@ struct ContentView: View {
             }
     }
 
-    private var boardWithHandlers: some View {
+    private var boardWithTasks: some View {
         boardWithAlerts
             .task {
                 (NSApp.delegate as? AppDelegate)?.register(channelShareController: shareController)
@@ -1265,6 +1358,10 @@ struct ContentView: View {
             .task(id: "self-compact-monitor") {
                 await selfCompactMonitorLoop()
             }
+    }
+
+    private var boardWithHandlers1: some View {
+        boardWithTasks
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged).receive(on: RunLoop.main)) { _ in
                 store.dispatch(.refreshChannels)
                 channelsWatcher.syncChannelLogs(store.state.channels.map(\.name))
@@ -1307,11 +1404,18 @@ struct ContentView: View {
                 keyMonitor = nil
                 channelsWatcher.stop()
             }
+    }
+
+    private var boardWithHandlers: some View {
+        boardWithHandlers1
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeToggleSearch).receive(on: RunLoop.main)) { _ in
                 if showSearch { closePalette() } else { openPalette() }
             }
-            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeNewTask).receive(on: RunLoop.main)) { _ in
-                presentNewTask()
+            .onReceive(Publishers.Merge(
+                NotificationCenter.default.publisher(for: .kanbanCodeNewTask),
+                NotificationCenter.default.publisher(for: .kanbanCodeOpenOrchestrator)
+            ).receive(on: RunLoop.main)) { note in
+                if note.name == .kanbanCodeOpenOrchestrator { openOrchestrator() } else { presentNewTask() }
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeLinksChanged).receive(on: RunLoop.main)) { _ in
                 // links.json changed on disk (e.g. `kanban task create` from a console
@@ -1389,6 +1493,11 @@ struct ContentView: View {
                             Image(systemName: "square.and.pencil")
                         }
                         .help("New task (⌘N)")
+
+                        Button { openOrchestrator() } label: {
+                            Image(systemName: "point.3.connected.trianglepath.dotted")
+                        }
+                        .help("Open the orchestrator (⌘⇧O)")
 
                         Button { showCreateChannel = true } label: {
                             Image(systemName: "number")
@@ -1529,6 +1638,14 @@ struct ContentView: View {
             .background { shortcutButtons }
         } // detail
         .toolbar(removing: .sidebarToggle)
+        .overlay {
+            // Full-screen Orchestrator mode — covers the whole window (board + sidebar).
+            if showOrchestratorView {
+                orchestratorView
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: showOrchestratorView)
         .overlay {
             if showSearch {
                 Color.black.opacity(0.3)
@@ -2556,7 +2673,7 @@ struct ContentView: View {
         }
     }
 
-    private func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, apiServiceId: String? = nil) {
+    func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, apiServiceId: String? = nil) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
         if let title, !title.isEmpty {

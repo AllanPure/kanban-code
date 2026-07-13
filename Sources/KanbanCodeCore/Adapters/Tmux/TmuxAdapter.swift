@@ -194,7 +194,11 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         // The -p flag wraps the paste in bracketed paste codes (\e[200~ … \e[201~),
         // telling the application (Gemini CLI) to treat the text literally and not
         // interpret special characters like ? (help) or ! (shell escape).
-        let tempFile = "/tmp/kanban-code-paste-\(ProcessInfo.processInfo.processIdentifier).txt"
+        // Unique per session — concurrent launches paste to different sessions at the
+        // same time, and a shared temp path let one prompt clobber another (empty/wrong
+        // paste). Keying by session name isolates them.
+        let safeSession = sessionName.replacingOccurrences(of: "/", with: "_")
+        let tempFile = "/tmp/kanban-code-paste-\(ProcessInfo.processInfo.processIdentifier)-\(safeSession).txt"
         try text.write(toFile: tempFile, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(atPath: tempFile) }
 

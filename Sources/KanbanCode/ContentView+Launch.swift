@@ -128,23 +128,60 @@ extension ContentView {
     /// decomposes tasks into Backlog cards via the `task-orchestrator` skill + `kanban`
     /// CLI. Focuses the existing one for the current project, or launches a fresh one.
     func openOrchestrator() {
+        // Toggle: ⌘⇧O / the button flips between Orchestrator mode and the board.
+        if showOrchestratorView {
+            showOrchestratorView = false
+            return
+        }
         let projectPath = store.state.selectedProjectPath ?? store.state.configuredProjects.first?.path
 
+        // Reuse the orchestrator session for this project only if it's still ALIVE
+        // (has a session and isn't archived). A killed/archived one is ignored so we
+        // create a fresh one — otherwise reopening after a kill was impossible.
         if let existing = store.state.cards.first(where: {
             $0.link.name == Self.orchestratorTitle
                 && $0.link.projectPath == projectPath
                 && $0.link.sessionLink != nil
+                && !$0.link.manuallyArchived
         }) {
-            store.dispatch(.selectCard(cardId: existing.id))
-            shouldFocusTerminal = true
+            orchestratorCardId = existing.id
+            orchestratorTab = .chat
+            showOrchestratorView = true
             return
         }
 
         let prompt = """
-        You are the task orchestrator for this project. When I give you a broad task, use the \
-        task-orchestrator skill to break it into a dependency graph of Backlog cards, propose the \
-        plan, and — once I approve — create the cards with the `kanban` CLI. You coordinate and \
-        delegate; you don't implement the tasks yourself.
+        You are my personal orchestrator / assistant ("Jarvis") for my dev work. Your capabilities:
+
+        • DECOMPOSE tasks — when I give you a broad task, use the `task-orchestrator` skill to break \
+        it into a dependency graph of Backlog cards, propose the plan, and (once I approve) create \
+        the cards. You coordinate and delegate; you don't implement yourself.
+
+        • BOARD — prefer the `kanban` MCP tools for anything board-related (list_cards, show_card, \
+        create_task, link_task/unlink_task, label_card/unlabel_card, mark_done, \
+        archive_cards/unarchive_cards) — they're structured and their changes stick live in the app. \
+        Use them to inspect the board, create/link cards, and archive noise/duplicates. The `kanban` \
+        CLI is a fallback for what the MCP doesn't cover (activity, todo, sessions, capture…).
+
+        • RECAP / TIMESHEET — `kanban activity --days <n> --json` lists my commits across all my \
+        projects (time, project, subject). Use it to recap what I worked on. To help me timesheet, \
+        cross-reference with my calendar: subscriptions live in ~/.kanban-code/calendars.json — read \
+        it, fetch the .ics url(s), and place meetings against the commits to reconstruct my day \
+        (e.g. "coded on X 9–11h, meeting 14–16h, no commits").
+
+        • TODOS — `kanban todo add|list|done|rm` (shared live with the app's Todos panel). You may \
+        create, complete, and reorganise them when I ask. Todos can carry an Odoo task id and a \
+        `publish` flag (`kanban todo set <id> --odoo <taskId> --publish`); when I ask, sync the \
+        published ones with Odoo via the odoo-pure MCP (create/update the matching project.task, \
+        write the resulting task_id back onto the todo).
+
+        • MAIL — read, search and triage my inbox via the Gmail MCP when I ask. (The app's \
+        Mail tab already shows my local mailbox from Mail.app; here I want your analysis, not a dump.)
+
+        • ODOO — work with my tasks/timesheets via the odoo-pure MCP.
+
+        Act on my behalf, but ask before anything destructive or outward-facing (sending mail, \
+        publishing to Odoo, etc.).
         """
         createManualTaskAndLaunch(
             prompt: prompt,
@@ -154,13 +191,14 @@ extension ContentView {
             runRemotely: true
         )
         // createManualTaskAndLaunch dispatches .createManualTask synchronously, so the
-        // card already exists — select it so its chat panel opens immediately (otherwise
-        // the orchestrator launches but stays invisible, buried among the columns).
-        if let created = store.state.cards.first(where: {
-            $0.link.name == Self.orchestratorTitle && $0.link.projectPath == projectPath
-        }) {
-            store.dispatch(.selectCard(cardId: created.id))
-            shouldFocusTerminal = true
+        // card already exists — open it. Pick the newest NON-archived match (KSUID ids
+        // sort by creation time) so a lingering killed/archived card is never reopened.
+        if let created = store.state.cards
+            .filter({ $0.link.name == Self.orchestratorTitle && $0.link.projectPath == projectPath && !$0.link.manuallyArchived })
+            .max(by: { $0.id < $1.id }) {
+            orchestratorCardId = created.id
+            orchestratorTab = .chat
+            showOrchestratorView = true
         }
     }
 
@@ -264,6 +302,17 @@ extension ContentView {
                             .filter { $0.hasSuffix(sessionFileExt) }
                     )
                 }
+
+                // Snapshot existing worktrees BEFORE launch. `claude --worktree` (empty
+                // name) auto-generates a whimsical name we don't know up-front, so we
+                // detect the one it creates by diffing this dir after launch — that lets
+                // us attach it to THIS card instead of leaving it to be adopted as a
+                // phantom "discovered" card by the reconciler.
+                let worktreesDir = (projectPath as NSString).appendingPathComponent(".claude/worktrees")
+                let willCreateWorktree = assistant.supportsWorktree && worktreeName != nil
+                let existingWorktrees: Set<String> = willCreateWorktree
+                    ? Set((try? FileManager.default.contentsOfDirectory(atPath: worktreesDir)) ?? [])
+                    : []
 
                 let tmuxName = try await launcher.launch(
                     sessionName: predictedTmuxName,
@@ -381,10 +430,27 @@ extension ContentView {
                     if sessionLink != nil { break }
                 }
 
-                // If worktree launch, try to extract branch from the session file immediately
+                // Attach the worktree to THIS card. Prefer the exact branch/cwd read from
+                // the session file; if session detection timed out (slow / racing concurrent
+                // launches), fall back to diffing .claude/worktrees/ for the dir claude just
+                // created. Either way the card owns its worktree — no phantom card.
                 var worktreeLink: WorktreeLink?
-                if worktreeName != nil, let sl = sessionLink, let sp = sl.sessionPath {
-                    worktreeLink = Self.extractWorktreeLink(sessionPath: sp, projectPath: projectPath)
+                if willCreateWorktree {
+                    if let sp = sessionLink?.sessionPath,
+                       let extracted = Self.extractWorktreeLink(sessionPath: sp, projectPath: projectPath) {
+                        worktreeLink = extracted
+                    } else {
+                        for _ in 0..<6 {
+                            let current = Set((try? FileManager.default.contentsOfDirectory(atPath: worktreesDir)) ?? [])
+                            if let newName = current.subtracting(existingWorktrees).first {
+                                let path = (worktreesDir as NSString).appendingPathComponent(newName)
+                                worktreeLink = WorktreeLink(path: path, branch: "worktree-\(newName)")
+                                KanbanCodeLog.info("launch", "Attached worktree \(newName) to card=\(cardId.prefix(12)) via dir-diff (no session file)")
+                                break
+                            }
+                            try? await Task.sleep(for: .milliseconds(400))
+                        }
+                    }
                 }
 
                 store.dispatch(.launchCompleted(cardId: cardId, tmuxName: tmuxName, sessionLink: sessionLink, worktreeLink: worktreeLink, isRemote: isRemote))

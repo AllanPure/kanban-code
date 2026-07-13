@@ -149,7 +149,8 @@ struct BoardView: View {
                     ForEach(store.state.visibleColumns, id: \.self) { column in
                         DroppableColumnView(
                             column: column,
-                            cards: store.state.unpinnedCards(in: column),
+                            // The orchestrator lives in its own dedicated view, not as a board card.
+                            cards: store.state.unpinnedCards(in: column).filter { $0.link.name != ContentView.orchestratorTitle },
                             selectedCardId: Binding(
                                 get: { store.state.selectedCardId },
                                 set: { store.dispatch(.selectCard(cardId: $0)) }

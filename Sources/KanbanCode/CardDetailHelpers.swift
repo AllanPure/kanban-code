@@ -333,7 +333,7 @@ struct CardActionsMenu: View {
 }
 
 enum DetailTab: String {
-    case terminal, history, issue, pullRequest, prompt
+    case terminal, history, issue, pullRequest, prompt, diff
 
     static func initialTab(for card: KanbanCodeCard) -> DetailTab {
         if card.link.tmuxLink != nil { return .terminal }

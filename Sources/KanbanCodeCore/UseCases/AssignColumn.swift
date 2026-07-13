@@ -12,11 +12,14 @@ public enum AssignColumn {
         allPRsDone: Bool = false,
         hasWorktree: Bool = false
     ) -> KanbanCodeColumn {
-        // Manual backlog override is sticky — user explicitly parked this card.
-        // Only resumeCard/launchCard (which clear manualOverrides.column) can move it out.
-        // This check must run BEFORE .activelyWorking to prevent activity from
-        // corrupting the backlog override (which would then be cleared by reconciliation).
-        if link.manualOverrides.column && link.column == .backlog {
+        // Manual backlog override is sticky — user explicitly parked this card — UNLESS
+        // it now has live work: an active tmux/worktree (passed via hasWorktree) or a
+        // hook-confirmed actively-working session. A running agent must never stay trapped
+        // in Backlog by a stale "parked" flag (the user can't drag it out otherwise).
+        // Only resumeCard/launchCard (which clear manualOverrides.column) can move a
+        // genuinely-parked card out.
+        let hasLiveWork = hasWorktree || activityState == .activelyWorking
+        if link.manualOverrides.column && link.column == .backlog && !hasLiveWork {
             return .backlog
         }
 
@@ -26,6 +29,14 @@ public enum AssignColumn {
         // `hasWorktree` is true for live tmux/worktree-backed work.
         if link.manuallyArchived && !hasWorktree {
             return .allSessions
+        }
+
+        // Manual drag wins over activity — a placement the user chose must stick without
+        // having to archive. Honored for every column EXCEPT a Backlog park on a card that
+        // now has live work (that escapes above). This runs BEFORE the activity/PR rules so
+        // an actively-working session can't yank a card the user deliberately moved.
+        if link.manualOverrides.column && !(link.column == .backlog && hasLiveWork) {
+            return link.column
         }
 
         // Actively working always shows in progress unless the archive guard
@@ -42,11 +53,6 @@ public enum AssignColumn {
         // Terminal PR state
         if allPRsDone {
             return .done
-        }
-
-        // Manual drag override (non-terminal)
-        if link.manualOverrides.column {
-            return link.column
         }
 
         // PR exists and session not actively working → inReview
